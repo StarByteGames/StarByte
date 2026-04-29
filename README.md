@@ -1,4 +1,4 @@
-# StarByte 0.1.0
+# StarByte 0.2.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -7,16 +7,28 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-FCC624?logo=linux&logoColor=black)
 ![Release](https://img.shields.io/badge/Release-Alpha-orange)
 
-> **Alpha release** — core language, interpreter, and standard library work,
-> but expect rough edges. Bug reports and feedback are welcome.
+> **Alpha release** — core language, interpreter, native compiler backend,
+> and standard library work, but expect rough edges. Bug reports and
+> feedback are welcome.
+
+## What's new in 0.2.0
+
+- Native compiler backend: `starbyte file.sb -o file` produces a
+  standalone executable by transpiling to C and invoking the system
+  C compiler.
+- New flags: `-o`, `--emit-c`, `--cc`, `--run`.
+- Both short (`Console.WriteLine`) and fully-qualified
+  (`System.Console.WriteLine`) namespace forms are accepted.
+- Documentation overhaul (README + `docs/LANGUAGE.md`).
+- VS Code syntax-highlighting extension under `editor/vscode/`.
 
 ## What is this?
 
 StarByte is a small programming language with familiar C/C# syntax,
 implemented as a single self-contained C11 binary. It ships with a
-tree-walking interpreter, a built-in standard library (`Console`, `Math`,
-`Strings`) and a `module` system. Use it for quick scripts or as a
-playground for language ideas.
+tree-walking interpreter, a native compiler backend, a built-in
+standard library (`Console`, `Math`, `Strings`) and a `module`
+system. Use it for quick scripts or as a playground for language ideas.
 
 ## Installation
 
@@ -92,16 +104,31 @@ int main() {
 
 ### CLI
 
-| Flag           | Action                                            |
-|----------------|---------------------------------------------------|
-| `<file.sb>`    | File to run                                       |
-| `-o <name>`    | Reserved for the future native compiler backend   |
-| `--version`    | Print version                                     |
-| `-h`, `--help` | Show help                                         |
+| Flag           | Action                                                          |
+|----------------|-----------------------------------------------------------------|
+| `<file.sb>`    | File to run or compile                                          |
+| `-o <name>`    | Compile to a native executable (transpiles to C, calls `$CC`)   |
+| `--emit-c <p>` | Keep / write the generated C file                               |
+| `--cc <prog>`  | Override the C compiler used by `-o` (default: `$CC` or `cc`)   |
+| `--run`        | Force interpreter mode (default when `-o` is not given)         |
+| `--version`    | Print version                                                   |
+| `-h`, `--help` | Show help                                                       |
 
 If a `main()` function is defined it runs automatically and its return
 value is the process exit code. Otherwise top-level statements run in
 order.
+
+### Native compilation
+
+```bash
+starbyte hello.sb -o hello   # produces ./hello
+./hello
+```
+
+Under the hood StarByte transpiles your program to a single self-contained
+C11 file and invokes the system C compiler. Override the compiler with
+`--cc clang` or by setting `CC=clang`. To inspect the generated C, pass
+`--emit-c hello.c`.
 
 ### Build targets (Makefile)
 
@@ -124,7 +151,9 @@ make install PREFIX=$HOME/.local
 
 ## Language
 
-A short tour — full reference in [docs/LANGUAGE.md](docs/LANGUAGE.md).
+A short tour — guide for the `starbyte` CLI in
+[docs/HOWTO.md](docs/HOWTO.md), full language reference in
+[docs/LANGUAGE.md](docs/LANGUAGE.md).
 
 ```cs
 module System.Console;
@@ -181,6 +210,7 @@ Everything lives in the project directory:
 |-------------------|-----------------------------------------|
 | `src/`            | Compiler/interpreter source (C11)       |
 | `examples/`       | Example `.sb` programs                  |
+| `docs/HOWTO.md`   | How to use the `starbyte` compiler/CLI  |
 | `docs/LANGUAGE.md`| Complete language reference             |
 | `editor/vscode/`  | VS Code syntax extension                |
 | `Makefile`        | POSIX make build                        |
@@ -191,12 +221,12 @@ Everything lives in the project directory:
 
 - [x] Lexer, parser, tree-walking interpreter
 - [x] Functions, recursion, modules, standard library
+- [x] Native compiler backend (`-o`, via C transpilation)
 - [ ] `struct` / `enum` runtime support
 - [ ] Classes, inheritance, interfaces
 - [ ] Manual memory and garbage collector
 - [ ] Exceptions (`try` / `catch` / `throw`)
 - [ ] Generics, lambdas, coroutines
-- [ ] Native compiler backend (`-o`)
 - [ ] Expanded stdlib (`File`, `Network`, `Collections`)
 
 ## License

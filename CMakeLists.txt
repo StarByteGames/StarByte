@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(StarByte VERSION 0.1.0 LANGUAGES C)
+project(StarByte VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -22,6 +22,7 @@ add_executable(starbyte
     src/ast.c
     src/value.c
     src/interpreter.c
+    src/codegen.c
 )
 
 target_include_directories(starbyte PRIVATE src)

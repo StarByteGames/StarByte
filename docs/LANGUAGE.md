@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.1.0. This document focuses on how to write StarByte programs.
+v0.2.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -63,8 +63,10 @@ starbyte <file.sb> [options]
 
 | Option         | Meaning                                                  |
 |----------------|----------------------------------------------------------|
-| `-o <name>`    | Reserved for the future native compiler backend.         |
-| `--run`        | Force run mode (default).                                |
+| `-o <name>`    | Compile to a native executable (transpiles to C, calls `$CC`). |
+| `--emit-c <p>` | Keep or emit the generated C source.                     |
+| `--cc <prog>`  | Override the C compiler used by `-o`.                    |
+| `--run`        | Force interpreter mode (default if `-o` is not given).   |
 | `--version`    | Print the StarByte version.                              |
 | `-h`, `--help` | Show CLI help.                                           |
 
@@ -532,7 +534,7 @@ starbyte example.sb
 
 ## 17. What's Not Yet Supported
 
-These are planned but not in v0.1.0:
+These are planned but not in v0.2.0:
 
 - `struct` / `enum` at runtime
 - Classes, inheritance, interfaces
@@ -541,7 +543,6 @@ These are planned but not in v0.1.0:
 - Exceptions (`try` / `catch` / `throw`)
 - Generics, lambdas, coroutines
 - Multi-file projects with user-defined modules
-- A native compiler backend (`-o output`)
 - `File`, `Network` standard libraries
 
 See the roadmap in [README.md](../README.md) for current status.
