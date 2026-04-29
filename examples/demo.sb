@@ -1,0 +1,39 @@
+module System.Console;
+module Math;
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int factorial(int n) {
+    if (n <= 1) return 1;
+    return n * factorial(n - 1);
+}
+
+void main() {
+    int result = add(2, 3);
+    Console.WriteLine("2 + 3 =", result);
+
+    for (int i = 0; i < 5; i++) {
+        Console.WriteLine("i =", i);
+    }
+
+    int x = 10;
+    while (x > 0) {
+        x--;
+    }
+    Console.WriteLine("x after loop:", x);
+
+    const int five = 5;
+    Console.WriteLine("5! =", factorial(five));
+
+    float pi = 3.14159;
+    Console.WriteLine("sqrt(2) =", Math.sqrt(2));
+    Console.WriteLine("pi =", pi);
+
+    string greeting = "Hello, " + "StarByte!";
+    Console.WriteLine(greeting);
+
+    bool ok = (1 + 1 == 2) && !(false);
+    Console.WriteLine("ok =", ok);
+}

@@ -1,0 +1,5 @@
+module System.Console;
+
+void main() {
+    Console.WriteLine("Hello, StarByte!");
+}
