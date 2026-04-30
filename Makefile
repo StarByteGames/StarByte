@@ -7,7 +7,7 @@
 #   make install    # install to PREFIX (default /usr/local)
 #   make clean
 
-VERSION    := 0.3.0
+VERSION    := 0.5.0
 
 CC         ?= cc
 PREFIX     ?= /usr/local

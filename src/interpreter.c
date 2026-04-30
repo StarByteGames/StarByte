@@ -264,6 +264,21 @@ static bool try_resolve_struct_member(Interp *I, Env *env, Node *member_expr, Va
         /* generic eval */
         v = eval(I, env, obj);
     }
+    if (v.type == V_OBJECT) {
+        StructFieldV *f = object_find_field(v.as.obj, member_expr->as.member.name);
+        if (!f) {
+            char msg[256];
+            snprintf(msg, sizeof msg, "object '%s' has no field '%s'",
+                     (v.as.obj && v.as.obj->cls && v.as.obj->cls->decl)
+                         ? v.as.obj->cls->decl->as.class_decl.name : "?",
+                     member_expr->as.member.name);
+            value_free(&v);
+            rt_error(I, member_expr->line, msg);
+        }
+        *out = value_copy(f->value);
+        value_free(&v);
+        return true;
+    }
     if (v.type != V_STRUCT) { value_free(&v); return false; }
     StructFieldV *f = struct_find_field(v.as.st, member_expr->as.member.name);
     if (!f) {
@@ -399,10 +414,8 @@ static Value eval(Interp *I, Env *env, Node *n) {
         case EX_ASSIGN: {
             Node *t = n->as.assign.target;
             if (t->kind == EX_MEMBER) {
-                /* Struct field assignment: obj.field = value (single level: obj must be ident
-                   or chain of struct fields). */
+                /* Object/struct field assignment: obj.field = value */
                 Value rhs = eval(I, env, n->as.assign.value);
-                /* Evaluate the object subexpression to get a struct (refcounted). */
                 Value obj;
                 Node *objn = t->as.member.object;
                 if (objn->kind == EX_IDENT) {
@@ -412,9 +425,33 @@ static Value eval(Interp *I, Env *env, Node *n) {
                 } else {
                     obj = eval(I, env, objn);
                 }
+                if (obj.type == V_OBJECT) {
+                    StructFieldV *f = object_find_field(obj.as.obj, t->as.member.name);
+                    if (!f) {
+                        char msg[256];
+                        snprintf(msg, sizeof msg, "object '%s' has no field '%s'",
+                                 (obj.as.obj && obj.as.obj->cls && obj.as.obj->cls->decl)
+                                     ? obj.as.obj->cls->decl->as.class_decl.name : "?",
+                                 t->as.member.name);
+                        value_free(&obj); value_free(&rhs);
+                        rt_error(I, n->line, msg);
+                    }
+                    Value to_store;
+                    if (n->as.assign.is_compound) {
+                        Value cur = value_copy(f->value);
+                        to_store = bin_arith(I, n->as.assign.compound, cur, rhs, n->line);
+                    } else {
+                        to_store = rhs;
+                    }
+                    Value ret = value_copy(&to_store);
+                    value_free(f->value);
+                    *f->value = to_store;
+                    value_free(&obj);
+                    return ret;
+                }
                 if (obj.type != V_STRUCT) {
                     value_free(&obj); value_free(&rhs);
-                    rt_error(I, n->line, "field assignment requires struct value");
+                    rt_error(I, n->line, "field assignment requires struct or object value");
                 }
                 StructFieldV *f = struct_find_field(obj.as.st, t->as.member.name);
                 if (!f) {
@@ -461,6 +498,73 @@ static Value eval(Interp *I, Env *env, Node *n) {
             return resolve_member(I, env, n);
         }
         case EX_CALL: {
+            /* Method-call dispatch: obj.method(args) where obj is V_OBJECT or V_SUPER. */
+            Node *cn = n->as.call.callee;
+            if (cn->kind == EX_MEMBER) {
+                Node *objn = cn->as.member.object;
+                Value recv;
+                bool have_recv = false;
+                if (objn->kind == EX_IDENT) {
+                    bool fnd = false;
+                    recv = env_get(env, objn->as.ident.name, &fnd);
+                    if (fnd) have_recv = true;
+                } else {
+                    recv = eval(I, env, objn);
+                    have_recv = true;
+                }
+                if (have_recv && (recv.type == V_OBJECT || recv.type == V_SUPER)) {
+                    ObjectInstance *self = (recv.type == V_OBJECT) ? recv.as.obj : recv.as.sup.obj;
+                    ClassDef *start = (recv.type == V_OBJECT) ? recv.as.obj->cls : recv.as.sup.from;
+                    ClassDef *owner = NULL;
+                    Node *m = class_find_method(start, cn->as.member.name, &owner);
+                    if (!m) {
+                        char msg[256];
+                        snprintf(msg, sizeof msg, "class '%s' has no method '%s'",
+                                 (start && start->decl) ? start->decl->as.class_decl.name : "?",
+                                 cn->as.member.name);
+                        value_free(&recv);
+                        rt_error(I, n->line, msg);
+                    }
+                    int argc = (int)n->as.call.args.count;
+                    Value *argv = argc ? (Value*)sb_xcalloc(argc, sizeof(Value)) : NULL;
+                    for (int i = 0; i < argc; i++)
+                        argv[i] = eval(I, env, n->as.call.args.items[i]);
+                    /* Build method env; bind 'this' (real instance, retained) and 'super' (if owner has parent). */
+                    Env *menv = env_new(I->globals);
+                    Value this_v;
+                    this_v.type = V_OBJECT;
+                    this_v.as.obj = self;
+                    self->refcount++;
+                    env_define(menv, "this", this_v, true);
+                    if (owner && owner->parent) {
+                        env_define(menv, "super", v_super(self, owner->parent), true);
+                    }
+                    size_t expected = m->as.func.param_count;
+                    if ((size_t)argc != expected) {
+                        char msg[160];
+                        snprintf(msg, sizeof msg, "method '%s' expects %zu arg(s), got %d",
+                                 m->as.func.name, expected, argc);
+                        for (int i = 0; i < argc; i++) value_free(&argv[i]);
+                        free(argv);
+                        env_free(menv);
+                        value_free(&recv);
+                        rt_error(I, n->line, msg);
+                    }
+                    for (size_t i = 0; i < expected; i++) {
+                        env_define(menv, m->as.func.params[i].name, value_copy(&argv[i]),
+                                   m->as.func.params[i].type.is_const);
+                    }
+                    exec(I, menv, m->as.func.body);
+                    Value r = v_null();
+                    if (I->return_flag) { r = I->return_value; I->return_value = v_null(); I->return_flag = 0; }
+                    for (int i = 0; i < argc; i++) value_free(&argv[i]);
+                    free(argv);
+                    env_free(menv);
+                    value_free(&recv);
+                    return r;
+                }
+                if (have_recv) value_free(&recv);
+            }
             Value callee;
             if (n->as.call.callee->kind == EX_MEMBER)
                 callee = resolve_member(I, env, n->as.call.callee);
@@ -485,6 +589,110 @@ static Value eval(Interp *I, Env *env, Node *n) {
 static Value call_value(Interp *I, Value callee, int argc, Value *argv, int line) {
     if (callee.type == V_BUILTIN) {
         return callee.as.builtin(I, argc, argv);
+    }
+    if (callee.type == V_SUPER) {
+        /* super(args) - call parent constructor on the bound instance. */
+        ClassDef *pc = callee.as.sup.from;
+        Node *ctor = NULL; ClassDef *owner = NULL;
+        for (ClassDef *c = pc; c; c = c->parent) {
+            int ci = c->decl->as.class_decl.ctor_index;
+            if (ci >= 0) { ctor = c->decl->as.class_decl.methods[ci]; owner = c; break; }
+        }
+        if (!ctor) {
+            if (argc != 0) rt_error(I, line, "no parent constructor accepts arguments");
+            return v_null();
+        }
+        Env *menv = env_new(I->globals);
+        Value this_v;
+        this_v.type = V_OBJECT;
+        this_v.as.obj = callee.as.sup.obj;
+        callee.as.sup.obj->refcount++;
+        env_define(menv, "this", this_v, true);
+        if (owner && owner->parent)
+            env_define(menv, "super", v_super(callee.as.sup.obj, owner->parent), true);
+        size_t expected = ctor->as.func.param_count;
+        if ((size_t)argc != expected) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "parent constructor expects %zu arg(s), got %d",
+                     expected, argc);
+            env_free(menv);
+            rt_error(I, line, msg);
+        }
+        for (size_t i = 0; i < expected; i++) {
+            env_define(menv, ctor->as.func.params[i].name, value_copy(&argv[i]),
+                       ctor->as.func.params[i].type.is_const);
+        }
+        exec(I, menv, ctor->as.func.body);
+        if (I->return_flag) { value_free(&I->return_value); I->return_value = v_null(); I->return_flag = 0; }
+        env_free(menv);
+        return v_null();
+    }
+    if (callee.type == V_CLASS) {
+        /* Instantiate: allocate object, run field initializers, optionally call ctor. */
+        Value obj = v_object(callee.as.cls);
+        /* Run field initializers in declaration order, parent classes first. */
+        ClassDef *chain[64]; int depth = 0;
+        for (ClassDef *c = callee.as.cls; c && depth < 64; c = c->parent) chain[depth++] = c;
+        for (int d = depth - 1; d >= 0; d--) {
+            Node *cd = chain[d]->decl;
+            for (size_t i = 0; i < cd->as.class_decl.field_count; i++) {
+                ClassField *cf = &cd->as.class_decl.fields[i];
+                if (!cf->init) continue;
+                /* Field initializers may reference 'this' and other fields. */
+                Env *ienv = env_new(I->globals);
+                Value this_v;
+                this_v.type = V_OBJECT;
+                this_v.as.obj = obj.as.obj;
+                obj.as.obj->refcount++;
+                env_define(ienv, "this", this_v, true);
+                Value v = eval(I, ienv, cf->init);
+                StructFieldV *f = object_find_field(obj.as.obj, cf->name);
+                if (f) { value_free(f->value); *f->value = v; }
+                else value_free(&v);
+                env_free(ienv);
+            }
+        }
+        /* Call constructor if present (search up chain). */
+        Node *ctor = NULL; ClassDef *ctor_owner = NULL;
+        for (ClassDef *c = callee.as.cls; c; c = c->parent) {
+            int ci = c->decl->as.class_decl.ctor_index;
+            if (ci >= 0) { ctor = c->decl->as.class_decl.methods[ci]; ctor_owner = c; break; }
+        }
+        if (ctor) {
+            Env *menv = env_new(I->globals);
+            Value this_v;
+            this_v.type = V_OBJECT;
+            this_v.as.obj = obj.as.obj;
+            obj.as.obj->refcount++;
+            env_define(menv, "this", this_v, true);
+            if (ctor_owner && ctor_owner->parent) {
+                env_define(menv, "super", v_super(obj.as.obj, ctor_owner->parent), true);
+            }
+            size_t expected = ctor->as.func.param_count;
+            if ((size_t)argc != expected) {
+                char msg[160];
+                snprintf(msg, sizeof msg, "constructor of '%s' expects %zu arg(s), got %d",
+                         callee.as.cls->decl->as.class_decl.name, expected, argc);
+                env_free(menv);
+                value_free(&obj);
+                rt_error(I, line, msg);
+            }
+            for (size_t i = 0; i < expected; i++) {
+                env_define(menv, ctor->as.func.params[i].name, value_copy(&argv[i]),
+                           ctor->as.func.params[i].type.is_const);
+            }
+            exec(I, menv, ctor->as.func.body);
+            if (I->return_flag) { value_free(&I->return_value); I->return_value = v_null(); I->return_flag = 0; }
+            env_free(menv);
+        } else if (argc != 0) {
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "class '%s' has no constructor but was called with %d arg(s)",
+                     callee.as.cls->decl->as.class_decl.name, argc);
+            value_free(&obj);
+            rt_error(I, line, msg);
+        }
+        return obj;
     }
     if (callee.type == V_FUNC) {
         Node *fn = callee.as.func.decl;
@@ -669,6 +877,77 @@ static void exec(Interp *I, Env *env, Node *n) {
             }
             break;
         }
+        case ST_CLASS_DECL: {
+            ClassDef *parent = NULL;
+            if (n->as.class_decl.base_name) {
+                bool fnd = false;
+                Value bv = env_get(env, n->as.class_decl.base_name, &fnd);
+                if (!fnd || bv.type != V_CLASS) {
+                    char msg[200];
+                    snprintf(msg, sizeof msg, "unknown base class '%s'", n->as.class_decl.base_name);
+                    value_free(&bv);
+                    rt_error(I, n->line, msg);
+                }
+                parent = bv.as.cls;  /* borrow; v_class will retain */
+                /* keep bv alive until v_class retains parent */
+                Value cls_v = v_class(n, parent);
+                value_free(&bv);
+                /* Verify declared interfaces have all methods */
+                for (size_t i = 0; i < n->as.class_decl.interface_count; i++) {
+                    bool ifnd = false;
+                    Value iv = env_get(env, n->as.class_decl.interface_names[i], &ifnd);
+                    if (!ifnd || iv.type != V_INTERFACE) {
+                        char msg[200];
+                        snprintf(msg, sizeof msg, "unknown interface '%s'", n->as.class_decl.interface_names[i]);
+                        value_free(&iv); value_free(&cls_v);
+                        rt_error(I, n->line, msg);
+                    }
+                    Node *id = iv.as.iface.decl;
+                    for (size_t k = 0; k < id->as.iface_decl.method_count; k++) {
+                        const char *mn = id->as.iface_decl.methods[k].name;
+                        if (!class_find_method(cls_v.as.cls, mn, NULL)) {
+                            char msg[256];
+                            snprintf(msg, sizeof msg, "class '%s' does not implement method '%s' from interface '%s'",
+                                     n->as.class_decl.name, mn, n->as.class_decl.interface_names[i]);
+                            value_free(&iv); value_free(&cls_v);
+                            rt_error(I, n->line, msg);
+                        }
+                    }
+                    value_free(&iv);
+                }
+                env_define(env, n->as.class_decl.name, cls_v, true);
+            } else {
+                Value cls_v = v_class(n, NULL);
+                for (size_t i = 0; i < n->as.class_decl.interface_count; i++) {
+                    bool ifnd = false;
+                    Value iv = env_get(env, n->as.class_decl.interface_names[i], &ifnd);
+                    if (!ifnd || iv.type != V_INTERFACE) {
+                        char msg[200];
+                        snprintf(msg, sizeof msg, "unknown interface '%s'", n->as.class_decl.interface_names[i]);
+                        value_free(&iv); value_free(&cls_v);
+                        rt_error(I, n->line, msg);
+                    }
+                    Node *id = iv.as.iface.decl;
+                    for (size_t k = 0; k < id->as.iface_decl.method_count; k++) {
+                        const char *mn = id->as.iface_decl.methods[k].name;
+                        if (!class_find_method(cls_v.as.cls, mn, NULL)) {
+                            char msg[256];
+                            snprintf(msg, sizeof msg, "class '%s' does not implement method '%s' from interface '%s'",
+                                     n->as.class_decl.name, mn, n->as.class_decl.interface_names[i]);
+                            value_free(&iv); value_free(&cls_v);
+                            rt_error(I, n->line, msg);
+                        }
+                    }
+                    value_free(&iv);
+                }
+                env_define(env, n->as.class_decl.name, cls_v, true);
+            }
+            break;
+        }
+        case ST_INTERFACE_DECL: {
+            env_define(env, n->as.iface_decl.name, v_interface(n), true);
+            break;
+        }
         default: {
             /* expression at top level (shouldn't happen via parser) */
             Value v = eval(I, env, n);
@@ -737,14 +1016,16 @@ int interp_run(Interp *I, Node *program) {
             v.as.func.decl = s;
             v.as.func.closure = I->globals;
             env_define(I->globals, s->as.func.name, v, true);
-        } else if (s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL) {
+        } else if (s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL
+                || s->kind == ST_INTERFACE_DECL || s->kind == ST_CLASS_DECL) {
             exec(I, I->globals, s);
         }
     }
     /* Execute top-level statements (skip already-hoisted decls). */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
-        if (s->kind == ST_FUNC_DECL || s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL) continue;
+        if (s->kind == ST_FUNC_DECL || s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL
+            || s->kind == ST_CLASS_DECL || s->kind == ST_INTERFACE_DECL) continue;
         exec(I, I->globals, s);
         if (I->return_flag) break;
     }

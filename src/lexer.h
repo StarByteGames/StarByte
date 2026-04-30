@@ -38,6 +38,9 @@ typedef enum {
     TK_KW_SWITCH,
     TK_KW_CASE,
     TK_KW_DEFAULT,
+    TK_KW_CLASS,
+    TK_KW_INTERFACE,
+    TK_KW_NEW,
 
     /* punctuation */
     TK_LPAREN,    /* ( */

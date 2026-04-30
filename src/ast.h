@@ -29,7 +29,9 @@ typedef enum {
     ST_FUNC_DECL,
     ST_MODULE,         /* module a.b.c; (parsed, ignored at runtime) */
     ST_STRUCT_DECL,    /* struct Name { type field; ... }; */
-    ST_ENUM_DECL       /* enum Name { A, B = 3, C }; */
+    ST_ENUM_DECL,      /* enum Name { A, B = 3, C }; */
+    ST_CLASS_DECL,     /* class Name [: Base[, IFoo, ...]] { fields/methods } */
+    ST_INTERFACE_DECL  /* interface Name { method signatures; } */
 } NodeKind;
 
 typedef enum {
@@ -69,6 +71,22 @@ typedef struct {
     long long value;
     bool      has_value;
 } EnumMember;
+
+/* Class members: a field is a TypeRef + name + optional default expression.
+   A method is just a Node* (ST_FUNC_DECL). */
+typedef struct {
+    TypeRef type;
+    char   *name;
+    Node   *init;       /* optional default value, may be NULL */
+} ClassField;
+
+/* Interface method signature: return type, name, params (no body). */
+typedef struct {
+    TypeRef ret_type;
+    char   *name;
+    Param  *params;
+    size_t  param_count;
+} InterfaceMethod;
 
 struct Node {
     NodeKind kind;
@@ -128,6 +146,26 @@ struct Node {
             EnumMember  *members;
             size_t       count;
         } enum_decl;
+
+        struct {
+            char         *name;
+            char         *base_name;       /* may be NULL */
+            char        **interface_names; /* array of strdup'd names, may be NULL */
+            size_t        interface_count;
+            ClassField   *fields;
+            size_t        field_count;
+            Node        **methods;         /* array of ST_FUNC_DECL */
+            size_t        method_count;
+            int           ctor_index;      /* index into methods (-1 if none) */
+        } class_decl;
+
+        struct {
+            char            *name;
+            char           **base_names;   /* parent interfaces, may be NULL */
+            size_t           base_count;
+            InterfaceMethod *methods;
+            size_t           method_count;
+        } iface_decl;
     } as;
 };
 

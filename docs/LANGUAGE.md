@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.3.0. This document focuses on how to write StarByte programs.
+v0.5.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -448,8 +448,82 @@ if (status == Status.ERR) {
 }
 ```
 
-> Native compilation (`-o`) does not yet support `struct`/`enum`.
-> Use the interpreter (the default) for programs that use them.
+> Both the interpreter (default) and the native backend (`-o`) fully
+> support `struct` and `enum`.
+
+---
+
+## 12b. Classes & Interfaces
+
+> Available in the **interpreter** only (v0.5.0). Programs that use
+> classes or interfaces with `-o` exit with a clear error.
+
+A class bundles fields and methods, optionally extends a single base
+class, and may implement any number of interfaces.
+
+```cs
+interface IGreeter {
+    string greet();
+}
+
+class Animal {
+    string name;
+    int    age = 0;        // fields can have default initializers
+
+    Animal(string n, int a) {        // constructor: same name as the class
+        this.name = n;
+        this.age = a;
+    }
+
+    string greet() {
+        return "Hello, I am " + this.name;
+    }
+
+    void describe() {
+        Console.WriteLine(this.greet(), "(age", this.age + ")");
+    }
+}
+
+class Dog : Animal, IGreeter {       // ': Base[, IFoo, IBar...]'
+    string breed;
+
+    Dog(string n, int a, string b) {
+        super(n, a);                 // call the parent constructor
+        this.breed = b;
+    }
+
+    string greet() {                 // override
+        return super.greet() + " - a " + this.breed;
+    }
+}
+
+int main() {
+    Animal a = new Animal("Pip", 4);
+    Dog    d = Dog("Rex", 7, "Labrador");   // 'new' is optional
+    a.describe();
+    d.describe();
+    return 0;
+}
+```
+
+Key points:
+
+- `class Name : Base, IFoo, IBar { ... }` — the **first** type after
+  `:` is the base class (single inheritance); the rest are interfaces.
+- A constructor is a method with the same name as the class and no
+  return type. A class may have at most one constructor.
+- `this` refers to the current instance and is implicitly available
+  inside methods and field initializers.
+- `super.method(args)` calls the parent's implementation. `super(args)`
+  inside a constructor delegates to the parent constructor.
+- Methods are dispatched dynamically — overriding works without a
+  `virtual`/`override` keyword.
+- `new ClassName(args)` and `ClassName(args)` are equivalent; the
+  `new` keyword is optional.
+- Interfaces declare method signatures only. At class-declaration
+  time, StarByte verifies that every interface method is implemented
+  somewhere in the class hierarchy.
+- Fields without an initializer default to `null`.
 
 ---
 
@@ -579,7 +653,6 @@ int doWork(int n) {
 | Assigning to a `const`                   | Remove `const`, or pick a different variable.    |
 | `if x > 0 { ... }` (no parens)           | Parentheses around conditions are required.     |
 | Mixing `int` and `string` w/o `+`        | Convert via concatenation: `"n=" + n`.           |
-| Using struct fields with `-o`            | Native backend doesn't support them yet — use the interpreter. |
 
 ---
 
@@ -633,10 +706,9 @@ starbyte example.sb
 
 ## 19. What's Not Yet Supported
 
-These are planned but not in v0.3.0:
+These are planned but not in v0.5.0:
 
-- `struct` / `enum` in the native backend (`-o`)
-- Classes, inheritance, interfaces
+- Classes/interfaces in the native backend (`-o`) — use the interpreter
 - Arrays and collections
 - Manual `alloc` / `free` and a garbage collector
 - Exceptions (`try` / `catch` / `throw`)

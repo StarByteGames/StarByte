@@ -94,6 +94,38 @@ void node_free(Node *n) {
             }
             free(n->as.enum_decl.members);
             break;
+        case ST_CLASS_DECL:
+            free(n->as.class_decl.name);
+            free(n->as.class_decl.base_name);
+            for (size_t i = 0; i < n->as.class_decl.interface_count; i++)
+                free(n->as.class_decl.interface_names[i]);
+            free(n->as.class_decl.interface_names);
+            for (size_t i = 0; i < n->as.class_decl.field_count; i++) {
+                typeref_free(&n->as.class_decl.fields[i].type);
+                free(n->as.class_decl.fields[i].name);
+                node_free(n->as.class_decl.fields[i].init);
+            }
+            free(n->as.class_decl.fields);
+            for (size_t i = 0; i < n->as.class_decl.method_count; i++)
+                node_free(n->as.class_decl.methods[i]);
+            free(n->as.class_decl.methods);
+            break;
+        case ST_INTERFACE_DECL:
+            free(n->as.iface_decl.name);
+            for (size_t i = 0; i < n->as.iface_decl.base_count; i++)
+                free(n->as.iface_decl.base_names[i]);
+            free(n->as.iface_decl.base_names);
+            for (size_t i = 0; i < n->as.iface_decl.method_count; i++) {
+                typeref_free(&n->as.iface_decl.methods[i].ret_type);
+                free(n->as.iface_decl.methods[i].name);
+                for (size_t j = 0; j < n->as.iface_decl.methods[i].param_count; j++) {
+                    typeref_free(&n->as.iface_decl.methods[i].params[j].type);
+                    free(n->as.iface_decl.methods[i].params[j].name);
+                }
+                free(n->as.iface_decl.methods[i].params);
+            }
+            free(n->as.iface_decl.methods);
+            break;
         default: break;
     }
     free(n);

@@ -1,4 +1,4 @@
-# StarByte 0.3.0
+# StarByte 0.5.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -11,6 +11,29 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
 
+## What's new in 0.5.0
+
+- **Object orientation** — `class`, `interface`, single inheritance and
+  multiple interface implementation, methods, fields with default
+  initializers, constructors, `this`, `super` (both `super.method(...)`
+  and `super(...)` for constructor delegation), and the optional `new`
+  keyword. See [examples/classes.sb](examples/classes.sb).
+- Interface conformance is checked at class-declaration time; missing
+  methods raise a clear runtime error.
+- Classes and interfaces currently run in the interpreter only;
+  `starbyte file.sb -o ...` will exit with a clear message if the
+  program uses them.
+
+## What's new in 0.4.0
+
+- `struct` and `enum` are now also supported by the native backend
+  (`starbyte file.sb -o file`). Brace initializers, default
+  construction, field reads/writes (including compound assignment),
+  and dotted/unqualified enum access all work end-to-end through
+  the C transpiler.
+- Generated programs print structs in the same `Name{f=v, ...}`
+  form as the interpreter.
+
 ## What's new in 0.3.0
 
 - `struct` types with brace initializers, field reads, and field
@@ -18,8 +41,8 @@ A fast, modern, general-purpose programming language — C-level performance, C#
   [examples/structs.sb](examples/structs.sb).
 - `enum` types with auto-incrementing or explicit integer values,
   accessible as `Color.RED` or unqualified `RED`.
-- Interpreter-only for now; the native backend (`-o`) emits a clear
-  error when struct/enum constructs appear.
+- Interpreter only in 0.3.0; the native backend (`-o`) gained
+  full support in 0.4.0.
 
 ## What's new in 0.2.0
 
@@ -191,6 +214,7 @@ int main() {
 | Modules       | `module a.b.c;`                                          |
 | Strings       | dynamic, `+` concatenates with anything                  |
 | Comments      | `//` and `/* ... */`                                     |
+| OOP           | `class`, `interface`, single inheritance, `this`, `super`, `new` (interpreter only) |
 
 ### Standard library
 
@@ -233,8 +257,9 @@ Everything lives in the project directory:
 - [x] Functions, recursion, modules, standard library
 - [x] Native compiler backend (`-o`, via C transpilation)
 - [x] `struct` / `enum` runtime support (interpreter)
-- [ ] `struct` / `enum` in native backend
-- [ ] Classes, inheritance, interfaces
+- [x] `struct` / `enum` in native backend
+- [x] Classes, inheritance, interfaces (interpreter)
+- [ ] Classes/interfaces in native backend (`-o`)
 - [ ] Manual memory and garbage collector
 - [ ] Exceptions (`try` / `catch` / `throw`)
 - [ ] Generics, lambdas, coroutines

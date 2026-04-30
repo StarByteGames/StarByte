@@ -16,7 +16,9 @@ static const char *RUNTIME_C =
 "#include <stdarg.h>\n"
 "#include <math.h>\n"
 "\n"
-"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING } sb_type;\n"
+"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT } sb_type;\n"
+"\n"
+"struct sb_struct;\n"
 "\n"
 "typedef struct {\n"
 "    sb_type t;\n"
@@ -26,8 +28,16 @@ static const char *RUNTIME_C =
 "        int       b;\n"
 "        char      c;\n"
 "        char     *s;\n"
+"        struct sb_struct *st;\n"
 "    } v;\n"
 "} sb_value;\n"
+"\n"
+"typedef struct sb_field { char *name; sb_value v; } sb_field;\n"
+"typedef struct sb_struct {\n"
+"    char *type_name;\n"
+"    int   n;\n"
+"    sb_field *f;\n"
+"} sb_struct;\n"
 "\n"
 "static void sb_oom(void){ fprintf(stderr,\"starbyte: out of memory\\n\"); exit(1); }\n"
 "static void *sb_xmalloc(size_t n){ void *p=malloc(n); if(!p) sb_oom(); return p; }\n"
@@ -49,6 +59,7 @@ static const char *RUNTIME_C =
 "        case SB_FLOAT:return v.v.f!=0.0;\n"
 "        case SB_CHAR: return v.v.c!=0;\n"
 "        case SB_STRING:return v.v.s && v.v.s[0];\n"
+"        case SB_STRUCT:return v.v.st!=0;\n"
 "    }\n"
 "    return 0;\n"
 "}\n"
@@ -62,6 +73,25 @@ static const char *RUNTIME_C =
 "        case SB_FLOAT:snprintf(buf,sizeof buf,\"%g\",v.v.f); return sb_strdup_(buf);\n"
 "        case SB_CHAR: { char b[2]={v.v.c,0}; return sb_strdup_(b); }\n"
 "        case SB_STRING:return sb_strdup_(v.v.s?v.v.s:\"\");\n"
+"        case SB_STRUCT: {\n"
+"            sb_struct *st = v.v.st;\n"
+"            size_t cap = 64, len = 0;\n"
+"            char *out = sb_xmalloc(cap);\n"
+"            #define SBAPP(s) do { const char *_s=(s); size_t _l=strlen(_s); if(len+_l+1>cap){cap=(len+_l+1)*2; out=realloc(out,cap); if(!out) sb_oom();} memcpy(out+len,_s,_l); len+=_l; out[len]='\\0'; } while(0)\n"
+"            SBAPP(st && st->type_name ? st->type_name : \"struct\");\n"
+"            SBAPP(\"{\");\n"
+"            if (st) {\n"
+"                for (int i = 0; i < st->n; i++) {\n"
+"                    if (i) SBAPP(\", \");\n"
+"                    SBAPP(st->f[i].name ? st->f[i].name : \"?\");\n"
+"                    SBAPP(\"=\");\n"
+"                    char *fs = sb_to_cstr(st->f[i].v); SBAPP(fs); free(fs);\n"
+"                }\n"
+"            }\n"
+"            SBAPP(\"}\");\n"
+"            #undef SBAPP\n"
+"            return out;\n"
+"        }\n"
 "    }\n"
 "    return sb_strdup_(\"\");\n"
 "}\n"
@@ -258,6 +288,38 @@ static const char *RUNTIME_C =
 "    return sb_string_take(out);\n"
 "}\n"
 "\n"
+"/* ----- struct helpers ----- */\n"
+"\n"
+"static sb_value sb_struct_new(const char *type_name, int n, ...) {\n"
+"    sb_struct *s = sb_xmalloc(sizeof(sb_struct));\n"
+"    s->type_name = sb_strdup_(type_name?type_name:\"\");\n"
+"    s->n = n;\n"
+"    s->f = n ? sb_xmalloc(sizeof(sb_field)*(size_t)n) : NULL;\n"
+"    va_list ap; va_start(ap, n);\n"
+"    for (int i = 0; i < n; i++) {\n"
+"        const char *fn = va_arg(ap, const char*);\n"
+"        sb_value     fv = va_arg(ap, sb_value);\n"
+"        s->f[i].name = sb_strdup_(fn?fn:\"\");\n"
+"        s->f[i].v    = fv;\n"
+"    }\n"
+"    va_end(ap);\n"
+"    sb_value r; r.t = SB_STRUCT; r.v.st = s; return r;\n"
+"}\n"
+"static sb_value sb_struct_get(sb_value sv, const char *name) {\n"
+"    if (sv.t != SB_STRUCT || !sv.v.st) sb_die(\"field access on non-struct value\");\n"
+"    for (int i = 0; i < sv.v.st->n; i++)\n"
+"        if (strcmp(sv.v.st->f[i].name, name)==0) return sv.v.st->f[i].v;\n"
+"    sb_die(\"unknown struct field\");\n"
+"    return sb_null();\n"
+"}\n"
+"static sb_value sb_struct_set(sb_value sv, const char *name, sb_value val) {\n"
+"    if (sv.t != SB_STRUCT || !sv.v.st) sb_die(\"field assign on non-struct value\");\n"
+"    for (int i = 0; i < sv.v.st->n; i++)\n"
+"        if (strcmp(sv.v.st->f[i].name, name)==0) { sv.v.st->f[i].v = val; return val; }\n"
+"    sb_die(\"unknown struct field\");\n"
+"    return sb_null();\n"
+"}\n"
+"\n"
 "/* --- end runtime --- */\n";
 
 /* ============================================================
@@ -269,7 +331,39 @@ typedef struct {
     int   indent;
     const char *src;
     bool  has_main;
+
+    /* tracked declarations for struct/enum support */
+    Node      **structs;        /* ST_STRUCT_DECL nodes */
+    size_t      struct_count;
+    /* flat enum-member table for dotted/unqualified resolution */
+    struct {
+        char       *enum_name;  /* "Color" */
+        char       *member;     /* "RED"   */
+        long long   value;
+    } *enums;
+    size_t      enum_count;
 } Cg;
+
+static Node *find_struct_decl(Cg *g, const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < g->struct_count; i++) {
+        if (strcmp(g->structs[i]->as.struct_decl.name, name) == 0)
+            return g->structs[i];
+    }
+    return NULL;
+}
+
+/* Look up an enum member by full dotted name "Enum.Member" or by bare "Member".
+   Returns true and writes value on success. */
+static bool find_enum_dotted(Cg *g, const char *enum_name, const char *member, long long *out) {
+    for (size_t i = 0; i < g->enum_count; i++) {
+        if (strcmp(g->enums[i].member, member) != 0) continue;
+        if (enum_name && strcmp(g->enums[i].enum_name, enum_name) != 0) continue;
+        *out = g->enums[i].value;
+        return true;
+    }
+    return false;
+}
 
 static void cg_indent(Cg *g) { for (int i = 0; i < g->indent; i++) fputs("    ", g->out); }
 static void cg_die(const char *msg, int line) {
@@ -400,7 +494,15 @@ static void cg_expr(Cg *g, Node *n) {
         case EX_NULL:   fputs("sb_null()", g->out); break;
         case EX_CHAR:   fprintf(g->out, "sb_char_((char)%lld)", n->as.i); break;
         case EX_STRING: fputs("sb_string(", g->out); cg_emit_c_string(g->out, n->as.s); fputc(')', g->out); break;
-        case EX_IDENT:  fprintf(g->out, "%s", n->as.ident.name); break;
+        case EX_IDENT: {
+            long long ev;
+            if (find_enum_dotted(g, NULL, n->as.ident.name, &ev)) {
+                fprintf(g->out, "sb_int(%lldLL)", ev);
+            } else {
+                fprintf(g->out, "%s", n->as.ident.name);
+            }
+            break;
+        }
         case EX_BINARY: {
             const char *fn = binop_fn(n->as.binary.op);
             if (!fn) cg_die("unsupported binary op", n->line);
@@ -440,6 +542,34 @@ static void cg_expr(Cg *g, Node *n) {
         }
         case EX_ASSIGN: {
             Node *t = n->as.assign.target;
+            if (t->kind == EX_MEMBER) {
+                /* Struct field assignment: emit sb_struct_set(obj, "name", value)
+                   (with sb_<op>(...) for compound). */
+                if (n->as.assign.is_compound) {
+                    const char *fn = binop_fn(n->as.assign.compound);
+                    if (!fn) cg_die("unsupported compound op", n->line);
+                    fputs("sb_struct_set(", g->out);
+                    cg_expr(g, t->as.member.object);
+                    fputs(", ", g->out);
+                    cg_emit_c_string(g->out, t->as.member.name);
+                    fprintf(g->out, ", %s(sb_struct_get(", fn);
+                    cg_expr(g, t->as.member.object);
+                    fputs(", ", g->out);
+                    cg_emit_c_string(g->out, t->as.member.name);
+                    fputs("), ", g->out);
+                    cg_expr(g, n->as.assign.value);
+                    fputs("))", g->out);
+                } else {
+                    fputs("sb_struct_set(", g->out);
+                    cg_expr(g, t->as.member.object);
+                    fputs(", ", g->out);
+                    cg_emit_c_string(g->out, t->as.member.name);
+                    fputs(", ", g->out);
+                    cg_expr(g, n->as.assign.value);
+                    fputc(')', g->out);
+                }
+                break;
+            }
             if (t->kind != EX_IDENT) cg_die("assign target must be variable", n->line);
             if (n->as.assign.is_compound) {
                 const char *fn = binop_fn(n->as.assign.compound);
@@ -455,9 +585,27 @@ static void cg_expr(Cg *g, Node *n) {
             break;
         }
         case EX_CALL:   cg_call(g, n); break;
-        case EX_MEMBER: cg_die("bare member access not supported in native backend", n->line); break;
+        case EX_MEMBER: {
+            /* enum dotted access: Color.RED -> sb_int(N) */
+            if (n->as.member.object && n->as.member.object->kind == EX_IDENT) {
+                long long ev;
+                if (find_enum_dotted(g, n->as.member.object->as.ident.name,
+                                     n->as.member.name, &ev)) {
+                    fprintf(g->out, "sb_int(%lldLL)", ev);
+                    break;
+                }
+            }
+            /* struct field read */
+            fputs("sb_struct_get(", g->out);
+            cg_expr(g, n->as.member.object);
+            fputs(", ", g->out);
+            cg_emit_c_string(g->out, n->as.member.name);
+            fputc(')', g->out);
+            break;
+        }
         case EX_STRUCT_LIT:
-            cg_die("struct/brace initializers are not supported by the native backend yet (use --run)", n->line);
+            /* should be consumed by ST_VAR_DECL with a known struct type */
+            cg_die("brace initializer requires a struct-typed declaration", n->line);
             break;
         default:        cg_die("unsupported expression", n->line);
     }
@@ -485,13 +633,47 @@ static void cg_stmt(Cg *g, Node *n) {
             cg_indent(g); fputs("}\n", g->out);
             break;
         }
-        case ST_VAR_DECL:
+        case ST_VAR_DECL: {
             cg_indent(g);
-            fprintf(g->out, "sb_value %s = ", n->as.var_decl.name);
-            if (n->as.var_decl.init) cg_expr(g, n->as.var_decl.init);
-            else fputs("sb_null()", g->out);
-            fputs(";\n", g->out);
+            Node *init = n->as.var_decl.init;
+            const char *tname = n->as.var_decl.type.type_name;
+            Node *sd = find_struct_decl(g, tname);
+            if (init && init->kind == EX_STRUCT_LIT) {
+                if (!sd) cg_die("brace initializer requires a known struct type", n->line);
+                size_t fc = sd->as.struct_decl.field_count;
+                size_t given = init->as.struct_lit.values.count;
+                if (given > fc) cg_die("too many initializers for struct", n->line);
+                fprintf(g->out, "sb_value %s = sb_struct_new(", n->as.var_decl.name);
+                cg_emit_c_string(g->out, sd->as.struct_decl.name);
+                fprintf(g->out, ", %zu", fc);
+                for (size_t i = 0; i < fc; i++) {
+                    fputs(", ", g->out);
+                    cg_emit_c_string(g->out, sd->as.struct_decl.fields[i].name);
+                    fputs(", ", g->out);
+                    if (i < given) cg_expr(g, init->as.struct_lit.values.items[i]);
+                    else fputs("sb_null()", g->out);
+                }
+                fputs(");\n", g->out);
+            } else if (!init && sd) {
+                /* default-construct struct: all fields null */
+                size_t fc = sd->as.struct_decl.field_count;
+                fprintf(g->out, "sb_value %s = sb_struct_new(", n->as.var_decl.name);
+                cg_emit_c_string(g->out, sd->as.struct_decl.name);
+                fprintf(g->out, ", %zu", fc);
+                for (size_t i = 0; i < fc; i++) {
+                    fputs(", ", g->out);
+                    cg_emit_c_string(g->out, sd->as.struct_decl.fields[i].name);
+                    fputs(", sb_null()", g->out);
+                }
+                fputs(");\n", g->out);
+            } else {
+                fprintf(g->out, "sb_value %s = ", n->as.var_decl.name);
+                if (init) cg_expr(g, init);
+                else fputs("sb_null()", g->out);
+                fputs(";\n", g->out);
+            }
             break;
+        }
         case ST_IF:
             cg_indent(g); fputs("if (sb_truthy(", g->out);
             cg_expr(g, n->as.if_stmt.cond);
@@ -558,6 +740,11 @@ static void cg_stmt(Cg *g, Node *n) {
         case ST_ENUM_DECL:
             /* not yet supported by native backend; silently skip top-level */
             break;
+        case ST_CLASS_DECL:
+        case ST_INTERFACE_DECL:
+            cg_die("classes/interfaces are interpreter-only in this release; "
+                   "drop -o to run with the interpreter", n->line);
+            break;
         default:          cg_die("unsupported statement", n->line);
     }
 }
@@ -602,6 +789,36 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     Cg g = {0};
     g.out = f;
     g.src = src_filename;
+
+    /* Collect struct and enum declarations (top-level only). */
+    for (size_t i = 0; i < program->as.block.stmts.count; i++) {
+        Node *s = program->as.block.stmts.items[i];
+        if (s->kind == ST_CLASS_DECL || s->kind == ST_INTERFACE_DECL) {
+            fprintf(stderr,
+                "starbyte: classes/interfaces are interpreter-only in this release.\n"
+                "          Run without -o (e.g. 'starbyte %s') to use the interpreter.\n",
+                src_filename ? src_filename : "<input>");
+            fclose(f);
+            free(g.structs);
+            return 1;
+        }
+        if (s->kind == ST_STRUCT_DECL) {
+            g.structs = (Node**)sb_xrealloc(g.structs, (g.struct_count + 1) * sizeof(Node*));
+            g.structs[g.struct_count++] = s;
+        } else if (s->kind == ST_ENUM_DECL) {
+            long long next = 0;
+            for (size_t k = 0; k < s->as.enum_decl.count; k++) {
+                EnumMember *m = &s->as.enum_decl.members[k];
+                long long val = m->has_value ? m->value : next;
+                next = val + 1;
+                g.enums = sb_xrealloc(g.enums, (g.enum_count + 1) * sizeof(*g.enums));
+                g.enums[g.enum_count].enum_name = sb_strdup(s->as.enum_decl.name);
+                g.enums[g.enum_count].member    = sb_strdup(m->name);
+                g.enums[g.enum_count].value     = val;
+                g.enum_count++;
+            }
+        }
+    }
 
     fprintf(f, "/* Generated by StarByte from %s */\n",
             src_filename ? src_filename : "<input>");
@@ -648,6 +865,13 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     fputs("}\n", f);
 
     fclose(f);
+
+    free(g.structs);
+    for (size_t i = 0; i < g.enum_count; i++) {
+        free(g.enums[i].enum_name);
+        free(g.enums[i].member);
+    }
+    free(g.enums);
     return 0;
 }
 

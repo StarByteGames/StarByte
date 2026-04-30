@@ -5,7 +5,7 @@
 #include <errno.h>
 
 #ifndef STARBYTE_VERSION
-#define STARBYTE_VERSION "0.3.0"
+#define STARBYTE_VERSION "0.5.0"
 #endif
 
 static char *read_file(const char *path) {

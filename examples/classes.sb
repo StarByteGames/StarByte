@@ -1,0 +1,49 @@
+module System.Console;
+
+interface IGreeter {
+    string greet();
+}
+
+class Animal {
+    string name;
+    int    age = 0;
+
+    Animal(string n, int a) {
+        this.name = n;
+        this.age = a;
+    }
+
+    string greet() {
+        return "Hello, I am " + this.name;
+    }
+
+    void describe() {
+        Console.WriteLine(this.greet(), "(age", this.age + ")");
+    }
+}
+
+class Dog : Animal, IGreeter {
+    string breed;
+
+    Dog(string n, int a, string b) {
+        // Call the parent constructor explicitly.
+        super(n, a);
+        this.breed = b;
+    }
+
+    // Override
+    string greet() {
+        return super.greet() + " - a " + this.breed;
+    }
+}
+
+int main() {
+    Animal a = new Animal("Pip", 4);
+    a.describe();
+
+    Dog d = Dog("Rex", 7, "Labrador");   // 'new' is optional
+    d.describe();
+
+    Console.WriteLine(d.greet());
+    return 0;
+}

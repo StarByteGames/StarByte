@@ -124,6 +124,13 @@ static Node *parse_primary(Parser *p) {
         case TK_KW_TRUE:  { advance(p); Node *n = node_new(EX_BOOL, line); n->as.b = true;  return n; }
         case TK_KW_FALSE: { advance(p); Node *n = node_new(EX_BOOL, line); n->as.b = false; return n; }
         case TK_KW_NULL:  { advance(p); return node_new(EX_NULL, line); }
+        case TK_KW_NEW: {
+            /* `new ClassName(args)` — desugar to a regular call where callee
+               is the class name identifier. The runtime treats V_CLASS as
+               callable (constructs an instance). */
+            advance(p);
+            return parse_postfix(p);
+        }
         case TK_LPAREN: {
             advance(p);
             Node *e = parse_expr(p);
@@ -572,6 +579,178 @@ static Node *parse_enum_decl(Parser *p) {
     return n;
 }
 
+/* ---------- class / interface ---------- */
+
+static Node *parse_class_body(Parser *p, const char *class_name, Node *out) {
+    expect(p, TK_LBRACE, "'{'");
+    ClassField *fields = NULL; size_t fc = 0, fcap = 0;
+    Node      **methods = NULL; size_t mc = 0, mcap = 0;
+
+    while (!check(p, TK_RBRACE) && !check(p, TK_EOF)) {
+        int mline = p->cur.line;
+        /* Constructor: IDENT == class name and next is '(' */
+        if (p->cur.type == TK_IDENT && p->cur.svalue
+            && strcmp(p->cur.svalue, class_name) == 0)
+        {
+            Token *pk = peek_tok(p);
+            if (pk->type == TK_LPAREN) {
+                /* synthesize a void return type */
+                TypeRef rt = {0}; rt.type_name = sb_strdup("void"); rt.is_const = false;
+                Node *ctor = parse_func_decl(p, rt);
+                /* rename to "<init>" so user-facing name doesn't clash with the class itself */
+                free(ctor->as.func.name);
+                ctor->as.func.name = sb_strdup("<init>");
+                if (mc == mcap) { mcap = mcap ? mcap * 2 : 4; methods = (Node**)sb_xrealloc(methods, mcap * sizeof(Node*)); }
+                methods[mc] = ctor;
+                out->as.class_decl.ctor_index = (int)mc;
+                mc++;
+                continue;
+            }
+        }
+        /* otherwise: parse a type, then ident, then either '(' (method) or '=' / ';' (field) */
+        TypeRef ty = parse_type(p);
+        if (p->cur.type != TK_IDENT) p_error(p, "expected field or method name");
+        char *member_name = p->cur.svalue; p->cur.svalue = NULL;
+        advance(p);
+        if (check(p, TK_LPAREN)) {
+            advance(p); /* ( */
+            Param *params = NULL; size_t pc = 0, pcap = 0;
+            if (!check(p, TK_RPAREN)) {
+                for (;;) {
+                    TypeRef pt = parse_type(p);
+                    if (p->cur.type != TK_IDENT) p_error(p, "expected parameter name");
+                    char *pn = p->cur.svalue; p->cur.svalue = NULL;
+                    advance(p);
+                    if (pc == pcap) { pcap = pcap ? pcap*2 : 4; params = (Param*)sb_xrealloc(params, pcap*sizeof(Param)); }
+                    params[pc].type = pt; params[pc].name = pn; pc++;
+                    if (!match(p, TK_COMMA)) break;
+                }
+            }
+            expect(p, TK_RPAREN, "')'");
+            Node *body = parse_block(p);
+            Node *fn = node_new(ST_FUNC_DECL, mline);
+            fn->as.func.ret_type = ty;
+            fn->as.func.name = member_name;
+            fn->as.func.params = params;
+            fn->as.func.param_count = pc;
+            fn->as.func.body = body;
+            if (mc == mcap) { mcap = mcap ? mcap * 2 : 4; methods = (Node**)sb_xrealloc(methods, mcap * sizeof(Node*)); }
+            methods[mc++] = fn;
+        } else {
+            Node *init = NULL;
+            if (match(p, TK_ASSIGN)) init = parse_expr(p);
+            expect(p, TK_SEMI, "';'");
+            if (fc == fcap) { fcap = fcap ? fcap * 2 : 4; fields = (ClassField*)sb_xrealloc(fields, fcap * sizeof(ClassField)); }
+            fields[fc].type = ty;
+            fields[fc].name = member_name;
+            fields[fc].init = init;
+            fc++;
+        }
+    }
+    expect(p, TK_RBRACE, "'}'");
+    match(p, TK_SEMI);
+    out->as.class_decl.fields = fields;
+    out->as.class_decl.field_count = fc;
+    out->as.class_decl.methods = methods;
+    out->as.class_decl.method_count = mc;
+    return out;
+}
+
+static Node *parse_class_decl(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* class */
+    if (p->cur.type != TK_IDENT) p_error(p, "expected class name");
+    char *name = p->cur.svalue; p->cur.svalue = NULL;
+    advance(p);
+
+    char  *base_name = NULL;
+    char **iface_names = NULL;
+    size_t iface_count = 0, iface_cap = 0;
+
+    if (match(p, TK_COLON)) {
+        if (p->cur.type != TK_IDENT) p_error(p, "expected base name after ':'");
+        base_name = p->cur.svalue; p->cur.svalue = NULL;
+        advance(p);
+        while (match(p, TK_COMMA)) {
+            if (p->cur.type != TK_IDENT) p_error(p, "expected interface name");
+            if (iface_count == iface_cap) {
+                iface_cap = iface_cap ? iface_cap * 2 : 4;
+                iface_names = (char**)sb_xrealloc(iface_names, iface_cap * sizeof(char*));
+            }
+            iface_names[iface_count++] = p->cur.svalue;
+            p->cur.svalue = NULL;
+            advance(p);
+        }
+    }
+
+    Node *n = node_new(ST_CLASS_DECL, line);
+    n->as.class_decl.name = name;
+    n->as.class_decl.base_name = base_name;
+    n->as.class_decl.interface_names = iface_names;
+    n->as.class_decl.interface_count = iface_count;
+    n->as.class_decl.ctor_index = -1;
+    parse_class_body(p, name, n);
+    return n;
+}
+
+static Node *parse_interface_decl(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* interface */
+    if (p->cur.type != TK_IDENT) p_error(p, "expected interface name");
+    char *name = p->cur.svalue; p->cur.svalue = NULL;
+    advance(p);
+
+    char **bases = NULL; size_t bc = 0, bcap = 0;
+    if (match(p, TK_COLON)) {
+        for (;;) {
+            if (p->cur.type != TK_IDENT) p_error(p, "expected interface name");
+            if (bc == bcap) { bcap = bcap ? bcap * 2 : 4; bases = (char**)sb_xrealloc(bases, bcap * sizeof(char*)); }
+            bases[bc++] = p->cur.svalue; p->cur.svalue = NULL;
+            advance(p);
+            if (!match(p, TK_COMMA)) break;
+        }
+    }
+
+    expect(p, TK_LBRACE, "'{'");
+    InterfaceMethod *methods = NULL; size_t mc = 0, mcap = 0;
+    while (!check(p, TK_RBRACE) && !check(p, TK_EOF)) {
+        TypeRef rt = parse_type(p);
+        if (p->cur.type != TK_IDENT) p_error(p, "expected method name");
+        char *mn = p->cur.svalue; p->cur.svalue = NULL;
+        advance(p);
+        expect(p, TK_LPAREN, "'('");
+        Param *params = NULL; size_t pc = 0, pcap = 0;
+        if (!check(p, TK_RPAREN)) {
+            for (;;) {
+                TypeRef pt = parse_type(p);
+                if (p->cur.type != TK_IDENT) p_error(p, "expected parameter name");
+                char *pn = p->cur.svalue; p->cur.svalue = NULL;
+                advance(p);
+                if (pc == pcap) { pcap = pcap ? pcap*2 : 4; params = (Param*)sb_xrealloc(params, pcap*sizeof(Param)); }
+                params[pc].type = pt; params[pc].name = pn; pc++;
+                if (!match(p, TK_COMMA)) break;
+            }
+        }
+        expect(p, TK_RPAREN, "')'");
+        expect(p, TK_SEMI, "';'");
+        if (mc == mcap) { mcap = mcap ? mcap * 2 : 4; methods = (InterfaceMethod*)sb_xrealloc(methods, mcap * sizeof(InterfaceMethod)); }
+        methods[mc].ret_type = rt;
+        methods[mc].name = mn;
+        methods[mc].params = params;
+        methods[mc].param_count = pc;
+        mc++;
+    }
+    expect(p, TK_RBRACE, "'}'");
+    match(p, TK_SEMI);
+    Node *n = node_new(ST_INTERFACE_DECL, line);
+    n->as.iface_decl.name = name;
+    n->as.iface_decl.base_names = bases;
+    n->as.iface_decl.base_count = bc;
+    n->as.iface_decl.methods = methods;
+    n->as.iface_decl.method_count = mc;
+    return n;
+}
+
 static Node *parse_stmt(Parser *p) {
     int line = p->cur.line;
     switch (p->cur.type) {
@@ -585,6 +764,8 @@ static Node *parse_stmt(Parser *p) {
         case TK_KW_CONTINUE: advance(p); expect(p, TK_SEMI, "';'"); return node_new(ST_CONTINUE, line);
         case TK_KW_STRUCT: return parse_struct_decl(p);
         case TK_KW_ENUM:   return parse_enum_decl(p);
+        case TK_KW_CLASS:  return parse_class_decl(p);
+        case TK_KW_INTERFACE: return parse_interface_decl(p);
         case TK_SEMI: advance(p); { Node *e = node_new(ST_EXPR, line); e->as.expr_stmt.expr = NULL; return e; }
         default: break;
     }
