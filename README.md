@@ -268,16 +268,20 @@ int main() {
 | `Memory`  / `System.Memory`  | `alloc`, `free`, `gcAlloc`, `gcCollect`, `length` |
 | globals                      | `print`, `println`, `alloc`, `free`, `gc_alloc`, `gc_collect`, `len` |
 
-<!-- ## Editor support
+## Editor support
 
-A VS Code syntax-highlighting extension lives in [editor/vscode/](editor/vscode/).
-To use it locally, copy or symlink the folder into your VS Code extensions dir:
+A VS Code syntax-highlighting extension is published on the
+Marketplace: [StarByteGames.starbyte-language](https://marketplace.visualstudio.com/items?itemName=StarByteGames.starbyte-language).
+
+Install it from the command line:
 
 ```bash
-ln -s "$PWD/editor/vscode" ~/.vscode/extensions/starbyte-language
+code --install-extension StarByteGames.starbyte-language
 ```
 
-Then `.sb` files and ` ```starbyte ` Markdown blocks get highlighted. -->
+Or search for **StarByte-Language** in the VS Code Extensions view.
+
+The extension source also lives in [editor/vscode/](editor/vscode/)
 
 ## Files
 
