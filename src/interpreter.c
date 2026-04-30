@@ -147,6 +147,122 @@ static Value strings_concat(Interp *I, int argc, Value *argv) {
     return v_string_take(out);
 }
 
+/* ===== Memory management builtins ===== */
+
+/* forward decl: real definition lives further down with the other coercions. */
+static long long to_int(const Value *v);
+
+static void gc_register(Interp *I, Buffer *b) {
+    b->gc_managed = true;
+    b->gc_next = I->gc_head;
+    I->gc_head = b;
+    I->gc_count++;
+}
+
+static Value mem_alloc(Interp *I, int argc, Value *argv) {
+    SB_UNUSED(I);
+    long long n = (argc >= 1) ? to_int(&argv[0]) : 0;
+    if (n < 0) n = 0;
+    Buffer *b = buffer_new((size_t)n);
+    return v_buffer(b);
+}
+
+static Value mem_free(Interp *I, int argc, Value *argv) {
+    if (argc < 1 || argv[0].type != V_BUFFER || !argv[0].as.buf)
+        rt_error(I, 0, "free() expects a buffer");
+    Buffer *b = argv[0].as.buf;
+    if (b->gc_managed)
+        rt_error(I, 0, "cannot free() a GC-managed buffer; use gc_collect()");
+    /* Release the contents now so dangling references see <buffer:freed>. */
+    buffer_free_contents(b);
+    return v_null();
+}
+
+static Value mem_gc_alloc(Interp *I, int argc, Value *argv) {
+    long long n = (argc >= 1) ? to_int(&argv[0]) : 0;
+    if (n < 0) n = 0;
+    Buffer *b = buffer_new((size_t)n);
+    /* Hand ownership to the GC: the returned Value still holds one ref so
+       the caller can use it; on collection we release that final ref via
+       free() of the Buffer struct itself. */
+    gc_register(I, b);
+    return v_buffer(b);
+}
+
+/* Mark all GC-managed buffers reachable from a Value. */
+static void gc_mark_value(const Value *v);
+
+static void gc_mark_buffer(Buffer *b) {
+    if (!b || b->gc_mark) return;
+    b->gc_mark = 1;
+    for (size_t i = 0; i < b->len; i++) gc_mark_value(&b->items[i]);
+}
+
+static void gc_mark_object(ObjectInstance *o) {
+    if (!o) return;
+    for (size_t i = 0; i < o->field_count; i++)
+        if (o->fields[i].value) gc_mark_value(o->fields[i].value);
+}
+
+static void gc_mark_struct(StructInstance *st) {
+    if (!st) return;
+    for (size_t i = 0; i < st->field_count; i++)
+        if (st->fields[i].value) gc_mark_value(st->fields[i].value);
+}
+
+static void gc_mark_value(const Value *v) {
+    if (!v) return;
+    switch (v->type) {
+        case V_BUFFER: gc_mark_buffer(v->as.buf); break;
+        case V_OBJECT: gc_mark_object(v->as.obj); break;
+        case V_STRUCT: gc_mark_struct(v->as.st); break;
+        case V_SUPER:  gc_mark_object(v->as.sup.obj); break;
+        default: break;
+    }
+}
+
+static void gc_mark_env(Env *e) {
+    for (Env *cur = e; cur; cur = cur->parent)
+        for (EnvEntry *en = cur->head; en; en = en->next)
+            gc_mark_value(&en->value);
+}
+
+static Value mem_gc_collect(Interp *I, int argc, Value *argv) {
+    SB_UNUSED(argc); SB_UNUSED(argv);
+    /* Reset marks. */
+    for (Buffer *b = I->gc_head; b; b = b->gc_next) b->gc_mark = 0;
+    /* Mark from globals + return value. */
+    gc_mark_env(I->globals);
+    gc_mark_value(&I->return_value);
+    /* Sweep. */
+    long long freed = 0;
+    Buffer *prev = NULL;
+    Buffer *cur = I->gc_head;
+    while (cur) {
+        Buffer *next = cur->gc_next;
+        if (!cur->gc_mark && cur->refcount <= 0) {
+            /* unreachable AND no live Value refs -> reclaim */
+            if (prev) prev->gc_next = next; else I->gc_head = next;
+            buffer_free_contents(cur);
+            free(cur);
+            I->gc_count--;
+            freed++;
+        } else {
+            prev = cur;
+        }
+        cur = next;
+    }
+    return v_int(freed);
+}
+
+static Value mem_len(Interp *I, int argc, Value *argv) {
+    SB_UNUSED(I);
+    if (argc < 1) return v_int(0);
+    if (argv[0].type == V_BUFFER && argv[0].as.buf) return v_int((long long)argv[0].as.buf->len);
+    if (argv[0].type == V_STRING) return v_int((long long)strlen(argv[0].as.s ? argv[0].as.s : ""));
+    return v_int(0);
+}
+
 /* ===== forward decls ===== */
 static Value eval(Interp *I, Env *env, Node *n);
 static void  exec(Interp *I, Env *env, Node *n);
@@ -413,6 +529,37 @@ static Value eval(Interp *I, Env *env, Node *n) {
         }
         case EX_ASSIGN: {
             Node *t = n->as.assign.target;
+            if (t->kind == EX_INDEX) {
+                Value rhs = eval(I, env, n->as.assign.value);
+                Value obj = eval(I, env, t->as.index_expr.object);
+                Value idx = eval(I, env, t->as.index_expr.index);
+                if (obj.type != V_BUFFER || !obj.as.buf) {
+                    value_free(&rhs); value_free(&obj); value_free(&idx);
+                    rt_error(I, n->line, "index target is not a buffer");
+                }
+                Buffer *b = obj.as.buf;
+                if (b->freed) {
+                    value_free(&rhs); value_free(&obj); value_free(&idx);
+                    rt_error(I, n->line, "buffer has been freed");
+                }
+                long long i = to_int(&idx);
+                if (i < 0 || (size_t)i >= b->len) {
+                    value_free(&rhs); value_free(&obj); value_free(&idx);
+                    rt_error(I, n->line, "buffer index out of bounds");
+                }
+                Value to_store;
+                if (n->as.assign.is_compound) {
+                    Value cur = value_copy(&b->items[i]);
+                    to_store = bin_arith(I, n->as.assign.compound, cur, rhs, n->line);
+                } else {
+                    to_store = rhs;
+                }
+                Value ret = value_copy(&to_store);
+                value_free(&b->items[i]);
+                b->items[i] = to_store;
+                value_free(&obj); value_free(&idx);
+                return ret;
+            }
             if (t->kind == EX_MEMBER) {
                 /* Object/struct field assignment: obj.field = value */
                 Value rhs = eval(I, env, n->as.assign.value);
@@ -496,6 +643,27 @@ static Value eval(Interp *I, Env *env, Node *n) {
         }
         case EX_MEMBER: {
             return resolve_member(I, env, n);
+        }
+        case EX_INDEX: {
+            Value obj = eval(I, env, n->as.index_expr.object);
+            Value idx = eval(I, env, n->as.index_expr.index);
+            if (obj.type != V_BUFFER || !obj.as.buf) {
+                value_free(&obj); value_free(&idx);
+                rt_error(I, n->line, "index target is not a buffer");
+            }
+            Buffer *b = obj.as.buf;
+            if (b->freed) {
+                value_free(&obj); value_free(&idx);
+                rt_error(I, n->line, "buffer has been freed");
+            }
+            long long i = to_int(&idx);
+            if (i < 0 || (size_t)i >= b->len) {
+                value_free(&obj); value_free(&idx);
+                rt_error(I, n->line, "buffer index out of bounds");
+            }
+            Value r = value_copy(&b->items[i]);
+            value_free(&obj); value_free(&idx);
+            return r;
         }
         case EX_CALL: {
             /* Method-call dispatch: obj.method(args) where obj is V_OBJECT or V_SUPER. */
@@ -998,12 +1166,42 @@ void interp_init(Interp *I, const char *filename) {
     /* Top-level convenience */
     env_define(I->globals, "println", v_builtin(builtin_println), true);
     env_define(I->globals, "print",   v_builtin(builtin_print),   true);
+
+    /* Memory management: top-level + Memory.* namespace forms. */
+    env_define(I->globals, "alloc",       v_builtin(mem_alloc),      true);
+    env_define(I->globals, "free",        v_builtin(mem_free),       true);
+    env_define(I->globals, "gc_alloc",    v_builtin(mem_gc_alloc),   true);
+    env_define(I->globals, "gc_collect",  v_builtin(mem_gc_collect), true);
+    env_define(I->globals, "len",         v_builtin(mem_len),        true);
+    env_define(I->globals, "Memory",                 v_namespace("Memory"),     true);
+    env_define(I->globals, "Memory.alloc",           v_builtin(mem_alloc),      true);
+    env_define(I->globals, "Memory.free",            v_builtin(mem_free),       true);
+    env_define(I->globals, "Memory.gcAlloc",         v_builtin(mem_gc_alloc),   true);
+    env_define(I->globals, "Memory.gcCollect",       v_builtin(mem_gc_collect), true);
+    env_define(I->globals, "Memory.length",          v_builtin(mem_len),        true);
+    env_define(I->globals, "System.Memory",          v_namespace("System.Memory"), true);
+    env_define(I->globals, "System.Memory.alloc",    v_builtin(mem_alloc),      true);
+    env_define(I->globals, "System.Memory.free",     v_builtin(mem_free),       true);
+    env_define(I->globals, "System.Memory.gcAlloc",  v_builtin(mem_gc_alloc),   true);
+    env_define(I->globals, "System.Memory.gcCollect",v_builtin(mem_gc_collect), true);
+    env_define(I->globals, "System.Memory.length",   v_builtin(mem_len),        true);
 }
 
 void interp_dispose(Interp *I) {
     value_free(&I->return_value);
     env_free(I->globals);
     I->globals = NULL;
+    /* Reclaim any remaining GC-managed buffers. After env_free their last
+       Value refs are gone, so they're definitely unreachable. */
+    Buffer *cur = I->gc_head;
+    while (cur) {
+        Buffer *next = cur->gc_next;
+        buffer_free_contents(cur);
+        free(cur);
+        cur = next;
+    }
+    I->gc_head = NULL;
+    I->gc_count = 0;
 }
 
 int interp_run(Interp *I, Node *program) {

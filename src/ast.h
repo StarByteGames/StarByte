@@ -15,6 +15,7 @@ typedef enum {
     EX_POSTFIX,        /* x++ x-- */
     EX_LOGICAL,        /* && || (short-circuit) */
     EX_STRUCT_LIT,     /* { e1, e2, ... } brace initializer */
+    EX_INDEX,          /* obj[idx] -- buffer indexing */
 
     /* Statements */
     ST_EXPR,
@@ -106,6 +107,7 @@ struct Node {
 
         struct { Node *callee; NodeList args; } call;
         struct { Node *object; char *name; } member;
+        struct { Node *object; Node *index; } index_expr;
         struct { OpKind op; Node *lhs, *rhs; } logical;
 
         struct { Node *expr; } expr_stmt;

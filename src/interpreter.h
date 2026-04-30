@@ -25,6 +25,10 @@ typedef struct Interp {
     int break_flag;
     int continue_flag;
     Value return_value;
+
+    /* Garbage-collected buffer list (intrusive). */
+    struct Buffer *gc_head;
+    size_t gc_count;
 } Interp;
 
 void  interp_init(Interp *I, const char *filename);

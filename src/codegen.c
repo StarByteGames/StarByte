@@ -15,10 +15,12 @@ static const char *RUNTIME_C =
 "#include <string.h>\n"
 "#include <stdarg.h>\n"
 "#include <math.h>\n"
+"#include <stddef.h>\n"
 "\n"
-"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT } sb_type;\n"
+"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT, SB_BUFFER } sb_type;\n"
 "\n"
 "struct sb_struct;\n"
+"struct sb_buffer;\n"
 "\n"
 "typedef struct {\n"
 "    sb_type t;\n"
@@ -29,6 +31,7 @@ static const char *RUNTIME_C =
 "        char      c;\n"
 "        char     *s;\n"
 "        struct sb_struct *st;\n"
+"        struct sb_buffer *bf;\n"
 "    } v;\n"
 "} sb_value;\n"
 "\n"
@@ -38,6 +41,17 @@ static const char *RUNTIME_C =
 "    int   n;\n"
 "    sb_field *f;\n"
 "} sb_struct;\n"
+"\n"
+"typedef struct sb_buffer {\n"
+"    size_t n;\n"
+"    sb_value *items;\n"
+"    int gc_managed;\n"
+"    int freed;\n"
+"    int gc_mark;\n"
+"    struct sb_buffer *gc_next;\n"
+"} sb_buffer;\n"
+"\n"
+"static sb_buffer *sb_gc_head = NULL;\n"
 "\n"
 "static void sb_oom(void){ fprintf(stderr,\"starbyte: out of memory\\n\"); exit(1); }\n"
 "static void *sb_xmalloc(size_t n){ void *p=malloc(n); if(!p) sb_oom(); return p; }\n"
@@ -60,6 +74,7 @@ static const char *RUNTIME_C =
 "        case SB_CHAR: return v.v.c!=0;\n"
 "        case SB_STRING:return v.v.s && v.v.s[0];\n"
 "        case SB_STRUCT:return v.v.st!=0;\n"
+"        case SB_BUFFER:return v.v.bf!=0 && !v.v.bf->freed;\n"
 "    }\n"
 "    return 0;\n"
 "}\n"
@@ -90,6 +105,22 @@ static const char *RUNTIME_C =
 "            }\n"
 "            SBAPP(\"}\");\n"
 "            #undef SBAPP\n"
+"            return out;\n"
+"        }\n"
+"        case SB_BUFFER: {\n"
+"            sb_buffer *b = v.v.bf;\n"
+"            if (!b) return sb_strdup_(\"<buffer:null>\");\n"
+"            if (b->freed) return sb_strdup_(\"<buffer:freed>\");\n"
+"            size_t cap=32,len=0;\n"
+"            char *out=sb_xmalloc(cap);\n"
+"            #define SBAPP2(s) do { const char *_s=(s); size_t _l=strlen(_s); if(len+_l+1>cap){cap=(len+_l+1)*2; out=realloc(out,cap); if(!out) sb_oom();} memcpy(out+len,_s,_l); len+=_l; out[len]='\\0'; } while(0)\n"
+"            SBAPP2(\"[\");\n"
+"            for (size_t i=0;i<b->n;i++){\n"
+"                if (i) SBAPP2(\", \");\n"
+"                char *fs=sb_to_cstr(b->items[i]); SBAPP2(fs); free(fs);\n"
+"            }\n"
+"            SBAPP2(\"]\");\n"
+"            #undef SBAPP2\n"
 "            return out;\n"
 "        }\n"
 "    }\n"
@@ -286,6 +317,102 @@ static const char *RUNTIME_C =
 "    }\n"
 "    free(vals);\n"
 "    return sb_string_take(out);\n"
+"}\n"
+"\n"
+"/* ----- memory management ----- */\n"
+"\n"
+"static sb_buffer *sb_buffer_new(size_t n){\n"
+"    sb_buffer *b = sb_xmalloc(sizeof(sb_buffer));\n"
+"    b->n = n;\n"
+"    b->items = n ? sb_xmalloc(sizeof(sb_value)*n) : NULL;\n"
+"    for (size_t i=0;i<n;i++) b->items[i] = sb_null();\n"
+"    b->gc_managed = 0;\n"
+"    b->freed = 0;\n"
+"    b->gc_mark = 0;\n"
+"    b->gc_next = NULL;\n"
+"    return b;\n"
+"}\n"
+"static void sb_buffer_free_contents(sb_buffer *b){\n"
+"    if (!b || b->freed) return;\n"
+"    if (b->items){ free(b->items); b->items = NULL; }\n"
+"    b->n = 0;\n"
+"    b->freed = 1;\n"
+"}\n"
+"static sb_value sb_alloc_(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value v = (argc>0)?va_arg(ap,sb_value):sb_int(0);\n"
+"    va_end(ap);\n"
+"    long long n = sb_to_int(v); if (n<0) n=0;\n"
+"    sb_buffer *b = sb_buffer_new((size_t)n);\n"
+"    sb_value r; r.t=SB_BUFFER; r.v.bf=b; return r;\n"
+"}\n"
+"static sb_value sb_free_(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value v = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    if (v.t!=SB_BUFFER || !v.v.bf) sb_die(\"free() expects a buffer\");\n"
+"    if (v.v.bf->gc_managed) sb_die(\"cannot free() a GC-managed buffer; use gc_collect()\");\n"
+"    sb_buffer_free_contents(v.v.bf);\n"
+"    free(v.v.bf);\n"
+"    return sb_null();\n"
+"}\n"
+"static sb_value sb_gc_alloc_(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value v = (argc>0)?va_arg(ap,sb_value):sb_int(0);\n"
+"    va_end(ap);\n"
+"    long long n = sb_to_int(v); if (n<0) n=0;\n"
+"    sb_buffer *b = sb_buffer_new((size_t)n);\n"
+"    b->gc_managed = 1;\n"
+"    b->gc_next = sb_gc_head;\n"
+"    sb_gc_head = b;\n"
+"    sb_value r; r.t=SB_BUFFER; r.v.bf=b; return r;\n"
+"}\n"
+"/* The codegen GC has no roots to walk -- variables are real C locals.\n"
+"   gc_collect() therefore frees every GC-managed buffer that is currently\n"
+"   in the GC list and not flagged via gc_mark. We provide gc_collect()\n"
+"   anyway so programs are portable between the interpreter and the\n"
+"   native backend; users who want manual control should use alloc/free. */\n"
+"static sb_value sb_gc_collect_(int argc, ...){\n"
+"    (void)argc;\n"
+"    long long freed = 0;\n"
+"    sb_buffer *prev=NULL, *cur=sb_gc_head;\n"
+"    while (cur){\n"
+"        sb_buffer *next = cur->gc_next;\n"
+"        if (!cur->gc_mark){\n"
+"            if (prev) prev->gc_next = next; else sb_gc_head = next;\n"
+"            sb_buffer_free_contents(cur);\n"
+"            free(cur);\n"
+"            freed++;\n"
+"        } else {\n"
+"            cur->gc_mark = 0;\n"
+"            prev = cur;\n"
+"        }\n"
+"        cur = next;\n"
+"    }\n"
+"    return sb_int(freed);\n"
+"}\n"
+"static sb_value sb_len_(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value v = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    if (v.t==SB_BUFFER && v.v.bf) return sb_int((long long)v.v.bf->n);\n"
+"    if (v.t==SB_STRING) return sb_int((long long)strlen(v.v.s?v.v.s:\"\"));\n"
+"    return sb_int(0);\n"
+"}\n"
+"static sb_value sb_index_get(sb_value b, sb_value idx){\n"
+"    if (b.t!=SB_BUFFER || !b.v.bf) sb_die(\"index target is not a buffer\");\n"
+"    if (b.v.bf->freed) sb_die(\"buffer has been freed\");\n"
+"    long long i = sb_to_int(idx);\n"
+"    if (i<0 || (size_t)i>=b.v.bf->n) sb_die(\"buffer index out of bounds\");\n"
+"    return b.v.bf->items[i];\n"
+"}\n"
+"static sb_value sb_index_set(sb_value b, sb_value idx, sb_value val){\n"
+"    if (b.t!=SB_BUFFER || !b.v.bf) sb_die(\"index target is not a buffer\");\n"
+"    if (b.v.bf->freed) sb_die(\"buffer has been freed\");\n"
+"    long long i = sb_to_int(idx);\n"
+"    if (i<0 || (size_t)i>=b.v.bf->n) sb_die(\"buffer index out of bounds\");\n"
+"    b.v.bf->items[i] = val;\n"
+"    return val;\n"
 "}\n"
 "\n"
 "/* ----- struct helpers ----- */\n"
@@ -549,6 +676,12 @@ static const char *map_builtin(const char *dotted) {
     /* globals */
     if (!strcmp(dotted, "println")) return "sb_println";
     if (!strcmp(dotted, "print"))   return "sb_print";
+    /* memory */
+    if (!strcmp(dotted, "alloc")      || !strcmp(dotted, "Memory.alloc")      || !strcmp(dotted, "System.Memory.alloc"))      return "sb_alloc_";
+    if (!strcmp(dotted, "free")       || !strcmp(dotted, "Memory.free")       || !strcmp(dotted, "System.Memory.free"))       return "sb_free_";
+    if (!strcmp(dotted, "gc_alloc")   || !strcmp(dotted, "Memory.gcAlloc")    || !strcmp(dotted, "System.Memory.gcAlloc"))    return "sb_gc_alloc_";
+    if (!strcmp(dotted, "gc_collect") || !strcmp(dotted, "Memory.gcCollect")  || !strcmp(dotted, "System.Memory.gcCollect"))  return "sb_gc_collect_";
+    if (!strcmp(dotted, "len")        || !strcmp(dotted, "Memory.length")     || !strcmp(dotted, "System.Memory.length"))     return "sb_len_";
     return NULL;
 }
 
@@ -736,6 +869,32 @@ static void cg_expr(Cg *g, Node *n) {
         }
         case EX_ASSIGN: {
             Node *t = n->as.assign.target;
+            if (t->kind == EX_INDEX) {
+                if (n->as.assign.is_compound) {
+                    const char *fn = binop_fn(n->as.assign.compound);
+                    if (!fn) cg_die("unsupported compound op", n->line);
+                    fputs("sb_index_set(", g->out);
+                    cg_expr(g, t->as.index_expr.object);
+                    fputs(", ", g->out);
+                    cg_expr(g, t->as.index_expr.index);
+                    fprintf(g->out, ", %s(sb_index_get(", fn);
+                    cg_expr(g, t->as.index_expr.object);
+                    fputs(", ", g->out);
+                    cg_expr(g, t->as.index_expr.index);
+                    fputs("), ", g->out);
+                    cg_expr(g, n->as.assign.value);
+                    fputs("))", g->out);
+                } else {
+                    fputs("sb_index_set(", g->out);
+                    cg_expr(g, t->as.index_expr.object);
+                    fputs(", ", g->out);
+                    cg_expr(g, t->as.index_expr.index);
+                    fputs(", ", g->out);
+                    cg_expr(g, n->as.assign.value);
+                    fputc(')', g->out);
+                }
+                break;
+            }
             if (t->kind == EX_MEMBER) {
                 /* Struct field assignment: emit sb_struct_set(obj, "name", value)
                    (with sb_<op>(...) for compound). */
@@ -779,6 +938,13 @@ static void cg_expr(Cg *g, Node *n) {
             break;
         }
         case EX_CALL:   cg_call(g, n); break;
+        case EX_INDEX:
+            fputs("sb_index_get(", g->out);
+            cg_expr(g, n->as.index_expr.object);
+            fputs(", ", g->out);
+            cg_expr(g, n->as.index_expr.index);
+            fputc(')', g->out);
+            break;
         case EX_MEMBER: {
             /* enum dotted access: Color.RED -> sb_int(N) */
             if (n->as.member.object && n->as.member.object->kind == EX_IDENT) {

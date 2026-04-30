@@ -18,7 +18,8 @@ typedef enum {
     V_CLASS,         /* class definition */
     V_OBJECT,        /* class instance */
     V_SUPER,         /* bound super reference (this + lookup_from class) */
-    V_INTERFACE      /* interface definition */
+    V_INTERFACE,     /* interface definition */
+    V_BUFFER         /* heap-allocated dynamic array of Values */
 } ValueType;
 
 struct Node;
@@ -53,6 +54,22 @@ typedef struct ObjectInstance {
     StructFieldV *fields;        /* parent fields first, then own */
 } ObjectInstance;
 
+/* A Buffer is a heap-allocated array of Value slots used for both manual
+   memory management (alloc/free) and the optional garbage collector
+   (gc_alloc/gc_collect). Manually-allocated buffers participate in normal
+   reference counting as well, so passing one around still works; calling
+   free() drops the contents and marks the buffer as freed. GC-managed
+   buffers ignore refcount-driven freeing and are collected by the GC. */
+typedef struct Buffer {
+    int     refcount;
+    size_t  len;
+    Value  *items;       /* len Value slots */
+    bool    gc_managed;  /* true: lifetime owned by GC */
+    bool    freed;       /* true after explicit free() (manual mode) */
+    int     gc_mark;     /* used during mark/sweep */
+    struct Buffer *gc_next; /* intrusive list head in Interp */
+} Buffer;
+
 struct Value {
     ValueType type;
     union {
@@ -83,6 +100,7 @@ struct Value {
         struct {
             struct Node *decl;       /* ST_INTERFACE_DECL (not owned) */
         } iface;
+        Buffer *buf;                 /* V_BUFFER */
     } as;
 };
 
@@ -104,6 +122,13 @@ Value v_class(struct Node *decl, ClassDef *parent);   /* parent may be NULL; tak
 Value v_object(ClassDef *cls);                        /* allocates fields, takes ref of cls */
 Value v_super(ObjectInstance *obj, ClassDef *from);   /* takes refs */
 Value v_interface(struct Node *decl);
+
+/* Buffer helpers (memory management). */
+Buffer *buffer_new(size_t len);          /* refcount 1, manual */
+void    buffer_retain(Buffer *b);
+void    buffer_release(Buffer *b);       /* drops refcount; frees if 0 and not GC */
+void    buffer_free_contents(Buffer *b); /* used by free() and GC sweep */
+Value   v_buffer(Buffer *b);             /* takes existing ref */
 StructFieldV *object_find_field(ObjectInstance *obj, const char *name);
 struct Node *class_find_method(ClassDef *cls, const char *name, ClassDef **owner_out);
 

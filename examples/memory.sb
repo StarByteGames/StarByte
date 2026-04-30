@@ -1,0 +1,39 @@
+module System.Console;
+
+// StarByte memory management:
+//   alloc(n)       -- manually-managed buffer of n slots
+//   free(buf)      -- release a manual buffer
+//   gc_alloc(n)    -- GC-managed buffer
+//   gc_collect()   -- run mark/sweep on GC-managed buffers
+//   len(x)         -- length of a buffer or string
+//   buf[i] / buf[i] = v   -- read/write a slot
+
+int main() {
+    // ----- manual mode -----
+    int n = 5;
+    int xs = alloc(n);
+    for (int i = 0; i < n; i++) {
+        xs[i] = i * i;
+    }
+    Console.Write("manual: [");
+    for (int i = 0; i < len(xs); i++) {
+        if (i > 0) Console.Write(", ");
+        Console.Write(xs[i]);
+    }
+    Console.WriteLine("]");
+    free(xs);
+
+    // ----- garbage-collected mode -----
+    int ys = gc_alloc(3);
+    ys[0] = "hello";
+    ys[1] = 42;
+    ys[2] = true;
+    Console.WriteLine("gc:    ", ys);
+
+    // Drop the only reference and let the collector reclaim it.
+    ys = null;
+    int freed = gc_collect();
+    Console.WriteLine("collected", freed, "buffer(s)");
+
+    return 0;
+}

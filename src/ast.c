@@ -44,6 +44,10 @@ void node_free(Node *n) {
             node_free(n->as.member.object);
             free(n->as.member.name);
             break;
+        case EX_INDEX:
+            node_free(n->as.index_expr.object);
+            node_free(n->as.index_expr.index);
+            break;
         case ST_EXPR: node_free(n->as.expr_stmt.expr); break;
         case ST_VAR_DECL:
             typeref_free(&n->as.var_decl.type);

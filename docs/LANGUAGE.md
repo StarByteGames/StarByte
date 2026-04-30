@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.5.0. This document focuses on how to write StarByte programs.
+v0.7.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -20,13 +20,14 @@ For build and install instructions see [README.md](../README.md).
 10. [Strings](#10-strings)
 11. [Structs](#11-structs)
 12. [Enums](#12-enums)
-13. [Standard Library](#13-standard-library)
-14. [Program Entry Point](#14-program-entry-point)
-15. [Exit Codes & Error Handling](#15-exit-codes--error-handling)
-16. [Style Guide](#16-style-guide)
-17. [Common Pitfalls](#17-common-pitfalls)
-18. [Full Example](#18-full-example)
-19. [What's Not Yet Supported](#19-whats-not-yet-supported)
+13. [Memory Management](#13-memory-management)
+14. [Standard Library](#14-standard-library)
+15. [Program Entry Point](#15-program-entry-point)
+16. [Exit Codes & Error Handling](#16-exit-codes--error-handling)
+17. [Style Guide](#17-style-guide)
+18. [Common Pitfalls](#18-common-pitfalls)
+19. [Full Example](#19-full-example)
+20. [What's Not Yet Supported](#20-whats-not-yet-supported)
 
 ---
 
@@ -527,7 +528,86 @@ Key points:
 
 ---
 
-## 13. Standard Library
+## 13. Memory Management
+
+StarByte gives you both **manual memory** and an **optional
+garbage collector**. The unit of allocation is a *buffer*: a
+fixed-size, heap-allocated array of dynamically-typed slots. Buffers
+are indexed with `[]`.
+
+### Allocation
+
+| Form              | Lifetime           | Free with                |
+|-------------------|--------------------|--------------------------|
+| `alloc(n)`        | manual             | `free(buf)`              |
+| `gc_alloc(n)`     | garbage-collected  | `gc_collect()` (or auto) |
+
+All allocators take a non-negative element count and return a buffer
+of `null` slots. They’re also exposed as `Memory.alloc`,
+`Memory.free`, `Memory.gcAlloc`, `Memory.gcCollect`, `Memory.length`
+(and the `System.Memory.*` aliases) for users who prefer namespaces.
+
+### Indexing
+
+```cs
+int xs = alloc(3);
+xs[0] = 1;
+xs[1] = 2;
+xs[2] = xs[0] + xs[1];     // 3
+int n = len(xs);           // 3
+```
+
+Reads and writes both use `buf[i]`. Compound assignment
+(`buf[i] += 1`) works as well. Out-of-bounds access aborts with a
+clear runtime error.
+
+Buffer slots are dynamically typed, so the same buffer can hold any
+mix of `int`, `string`, `bool`, structs, objects, even other buffers.
+
+### Manual mode (`alloc` / `free`)
+
+```cs
+int xs = alloc(5);
+for (int i = 0; i < len(xs); i++) xs[i] = i * i;
+free(xs);                  // releases the storage
+// reading xs after free() is a runtime error: "buffer has been freed"
+```
+
+`free()` only releases the underlying storage — the buffer object
+itself is dropped when the last reference goes away. Calling `free()`
+on a `gc_alloc`-ed buffer is a runtime error.
+
+### Garbage-collected mode (`gc_alloc` / `gc_collect`)
+
+```cs
+int ys = gc_alloc(3);
+ys[0] = "hello";
+ys[1] = 42;
+ys[2] = true;
+
+ys = null;                 // drop the only reference
+int freed = gc_collect();  // mark/sweep, returns count freed
+```
+
+The collector walks the global environment plus the current return
+value, marks every reachable buffer, and frees the rest. It only
+touches buffers created with `gc_alloc` — manually-allocated buffers
+are never collected. Any GC buffers still alive at program exit are
+reclaimed automatically.
+
+> The native backend (`-o`) provides the same API. Because the
+> generated C uses real local variables for roots, its `gc_collect()`
+> is a slightly simpler best-effort sweep — use `alloc`/`free` for
+> deterministic native lifetimes.
+
+### `len`
+
+`len(x)` returns the size of a buffer or the byte length of a
+`string`. For other values it returns `0`.
+
+---
+
+## 14. Standard Library
 
 All built-ins are available without import. Both short and `System.`-prefixed
 forms work.
@@ -561,6 +641,19 @@ Console.WriteLine("Hi", n);
 | `Strings.length(s)`     | Number of bytes in `s`                        |
 | `Strings.concat(...)`   | Concatenate arbitrary values into one string  |
 
+### `Memory`
+
+| Function                  | Description                                   |
+|---------------------------|-----------------------------------------------|
+| `Memory.alloc(n)`         | Allocate a manually-managed buffer            |
+| `Memory.free(buf)`        | Release a manually-managed buffer             |
+| `Memory.gcAlloc(n)`       | Allocate a GC-managed buffer                  |
+| `Memory.gcCollect()`      | Run mark/sweep, returns count freed           |
+| `Memory.length(x)`        | Length of a buffer or string                  |
+
+All of the above are also exposed as bare globals: `alloc`, `free`,
+`gc_alloc`, `gc_collect`, `len`.
+
 ### Globals
 
 `println(...)` and `print(...)` are aliases of the matching
@@ -568,7 +661,7 @@ Console.WriteLine("Hi", n);
 
 ---
 
-## 14. Program Entry Point
+## 15. Program Entry Point
 
 Two valid styles:
 
@@ -591,7 +684,7 @@ If `main` is `void`, the exit code is `0`.
 
 ---
 
-## 15. Exit Codes & Error Handling
+## 16. Exit Codes & Error Handling
 
 Today StarByte uses return codes for application logic:
 
@@ -620,7 +713,7 @@ and a non-zero exit code.
 
 ---
 
-## 16. Style Guide
+## 17. Style Guide
 
 - Indentation: 4 spaces, no tabs.
 - Braces: opening brace on the same line.
@@ -644,7 +737,7 @@ int doWork(int n) {
 
 ---
 
-## 17. Common Pitfalls
+## 18. Common Pitfalls
 
 | Mistake                                  | Fix                                              |
 |------------------------------------------|--------------------------------------------------|
@@ -656,7 +749,7 @@ int doWork(int n) {
 
 ---
 
-## 18. Full Example
+## 19. Full Example
 
 ```cs
 module System.Console;
@@ -704,13 +797,11 @@ starbyte example.sb
 
 ---
 
-## 19. What's Not Yet Supported
+## 20. What's Not Yet Supported
 
-These are planned but not in v0.5.0:
+These are planned but not in v0.7.0:
 
-- Classes/interfaces in the native backend (`-o`) — use the interpreter
-- Arrays and collections
-- Manual `alloc` / `free` and a garbage collector
+- Arrays with built-in iteration syntax (use buffers + `for`)
 - Exceptions (`try` / `catch` / `throw`)
 - Generics, lambdas, coroutines
 - Multi-file projects with user-defined modules

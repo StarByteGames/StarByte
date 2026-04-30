@@ -1,4 +1,4 @@
-# StarByte 0.6.0
+# StarByte 0.7.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -10,6 +10,34 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > **Alpha release** — core language, interpreter, native compiler backend,
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
+
+## What's new in 0.7.0
+
+- **Manual memory and a garbage collector** — heap-allocated buffers are
+  now a first-class value type, with bracket indexing for read and write:
+
+  ```cs
+  int xs = alloc(10);          // manual: explicit free()
+  xs[0] = 42;
+  Console.WriteLine(xs[0], len(xs));
+  free(xs);
+
+  int ys = gc_alloc(3);        // GC-managed: collected on demand
+  ys[0] = "hello"; ys[1] = 1; ys[2] = true;
+  ys = null;
+  gc_collect();                // mark/sweep, returns count freed
+  ```
+
+  Both forms are available globally and as `Memory.alloc`,
+  `Memory.free`, `Memory.gcAlloc`, `Memory.gcCollect`, `Memory.length`
+  (and the `System.Memory.*` aliases). Buffers participate in the same
+  reference-count machinery as strings/objects, so passing them around
+  works as expected. Both the interpreter and the native backend
+  (`-o`) implement the new builtins. See
+  [examples/memory.sb](examples/memory.sb).
+- New AST node and parser rule for `expr[expr]` indexing, usable on
+  buffers (and convertible to a write target via `expr[expr] = value`,
+  including compound assignment).
 
 ## What's new in 0.6.0
 
@@ -228,6 +256,7 @@ int main() {
 | Strings       | dynamic, `+` concatenates with anything                  |
 | Comments      | `//` and `/* ... */`                                     |
 | OOP           | `class`, `interface`, single inheritance, `this`, `super`, `new` (interpreter + native) |
+| Memory        | `alloc` / `free`, `gc_alloc` / `gc_collect`, `len`, `buf[i]` |
 
 ### Standard library
 
@@ -236,7 +265,8 @@ int main() {
 | `Console` / `System.Console` | `WriteLine`, `Write`, `ReadLine`   |
 | `Math`    / `System.Math`    | `sqrt`, `abs`, `pow`               |
 | `Strings` / `System.Strings` | `length`, `concat`                 |
-| globals                      | `print`, `println`                 |
+| `Memory`  / `System.Memory`  | `alloc`, `free`, `gcAlloc`, `gcCollect`, `length` |
+| globals                      | `print`, `println`, `alloc`, `free`, `gc_alloc`, `gc_collect`, `len` |
 
 <!-- ## Editor support
 
@@ -273,7 +303,7 @@ Everything lives in the project directory:
 - [x] `struct` / `enum` in native backend
 - [x] Classes, inheritance, interfaces (interpreter)
 - [x] Classes/interfaces in native backend (`-o`)
-- [ ] Manual memory and garbage collector
+- [x] Manual memory and garbage collector
 - [ ] Exceptions (`try` / `catch` / `throw`)
 - [ ] Generics, lambdas, coroutines
 - [ ] Expanded stdlib (`File`, `Network`, `Collections`)

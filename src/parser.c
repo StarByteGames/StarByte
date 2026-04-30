@@ -174,6 +174,13 @@ static Node *parse_postfix(Parser *p) {
             }
             expect(p, TK_RPAREN, "')'");
             e = call;
+        } else if (match(p, TK_LBRACKET)) {
+            Node *idx = parse_expr(p);
+            expect(p, TK_RBRACKET, "']'");
+            Node *ix = node_new(EX_INDEX, line);
+            ix->as.index_expr.object = e;
+            ix->as.index_expr.index = idx;
+            e = ix;
         } else if (check(p, TK_PLUSPLUS) || check(p, TK_MINUSMINUS)) {
             OpKind op = (p->cur.type == TK_PLUSPLUS) ? OP_INC : OP_DEC;
             advance(p);

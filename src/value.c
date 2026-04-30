@@ -72,6 +72,50 @@ Value v_super(ObjectInstance *obj, ClassDef *from) {
 
 Value v_interface(struct Node *decl) { Value v = {0}; v.type = V_INTERFACE; v.as.iface.decl = decl; return v; }
 
+/* ===== Buffers (manual + GC) ===== */
+
+Buffer *buffer_new(size_t len) {
+    Buffer *b = (Buffer*)sb_xcalloc(1, sizeof(Buffer));
+    b->refcount = 1;
+    b->len = len;
+    b->items = len ? (Value*)sb_xcalloc(len, sizeof(Value)) : NULL;
+    for (size_t i = 0; i < len; i++) b->items[i].type = V_NULL;
+    b->gc_managed = false;
+    b->freed = false;
+    b->gc_mark = 0;
+    b->gc_next = NULL;
+    return b;
+}
+
+void buffer_retain(Buffer *b) { if (b) b->refcount++; }
+
+void buffer_free_contents(Buffer *b) {
+    if (!b || b->freed) return;
+    if (b->items) {
+        for (size_t i = 0; i < b->len; i++) value_free(&b->items[i]);
+        free(b->items);
+        b->items = NULL;
+    }
+    b->len = 0;
+    b->freed = true;
+}
+
+void buffer_release(Buffer *b) {
+    if (!b) return;
+    if (--b->refcount > 0) return;
+    /* GC-managed buffers are owned by the GC; don't truly free here. */
+    if (b->gc_managed) return;
+    buffer_free_contents(b);
+    free(b);
+}
+
+Value v_buffer(Buffer *b) {
+    Value v = {0};
+    v.type = V_BUFFER;
+    v.as.buf = b;
+    return v;
+}
+
 StructFieldV *object_find_field(ObjectInstance *obj, const char *name) {
     if (!obj) return NULL;
     for (size_t i = 0; i < obj->field_count; i++) {
@@ -163,6 +207,7 @@ Value value_copy(const Value *v) {
         if (v->as.sup.obj) v->as.sup.obj->refcount++;
         if (v->as.sup.from) v->as.sup.from->refcount++;
     }
+    else if (v->type == V_BUFFER && v->as.buf) v->as.buf->refcount++;
     return r;
 }
 
@@ -177,6 +222,7 @@ void value_free(Value *v) {
         if (v->as.sup.from) classdef_release(v->as.sup.from);
         v->as.sup.obj = NULL; v->as.sup.from = NULL;
     }
+    else if (v->type == V_BUFFER && v->as.buf) { buffer_release(v->as.buf); v->as.buf = NULL; }
     v->type = V_NULL;
 }
 
@@ -210,6 +256,28 @@ char *value_to_cstring(const Value *v) {
         case V_STRUCT_DEF: return sb_strdup("<struct-def>");
         case V_CLASS: return sb_strdup("<class>");
         case V_INTERFACE: return sb_strdup("<interface>");
+        case V_BUFFER: {
+            Buffer *b = v->as.buf;
+            if (!b) return sb_strdup("<buffer:null>");
+            if (b->freed) return sb_strdup("<buffer:freed>");
+            size_t cap = 32, len = 0;
+            char *out = (char*)sb_xmalloc(cap);
+            #define APPB(s) do { \
+                const char *_s = (s); size_t _l = strlen(_s); \
+                if (len + _l + 1 > cap) { cap = (len + _l + 1) * 2; out = (char*)sb_xrealloc(out, cap); } \
+                memcpy(out + len, _s, _l); len += _l; out[len] = '\0'; \
+            } while (0)
+            APPB("[");
+            for (size_t i = 0; i < b->len; i++) {
+                if (i) APPB(", ");
+                char *fs = value_to_cstring(&b->items[i]);
+                APPB(fs);
+                free(fs);
+            }
+            APPB("]");
+            #undef APPB
+            return out;
+        }
         case V_SUPER: return sb_strdup("<super>");
         case V_OBJECT: {
             ObjectInstance *o = v->as.obj;
@@ -283,6 +351,7 @@ const char *value_type_name(ValueType t) {
         case V_OBJECT: return "object";
         case V_SUPER: return "super";
         case V_INTERFACE: return "interface";
+        case V_BUFFER: return "buffer";
     }
     return "?";
 }
