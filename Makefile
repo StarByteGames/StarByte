@@ -7,7 +7,7 @@
 #   make install    # install to PREFIX (default /usr/local)
 #   make clean
 
-VERSION    := 0.8.1
+VERSION    := 0.9.0
 
 CC         ?= cc
 PREFIX     ?= /usr/local
@@ -28,7 +28,7 @@ ifeq ($(OS),Windows_NT)
     DEFS  += -DSTARBYTE_WINDOWS=1
     LIBS  :=
 else
-    DEFS  += -DSTARBYTE_LINUX=1
+    DEFS  += -DSTARBYTE_LINUX=1 -D_XOPEN_SOURCE=600
     LIBS  := -lm
 endif
 

@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.8.1. This document focuses on how to write StarByte programs.
+v0.9.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -773,6 +773,127 @@ and a non-zero exit code.
 
 ---
 
+## 17a. Lambdas & First-Class Functions
+
+Functions are values. You can store them in variables, pass them as
+arguments, and return them from other functions. Use the `var` keyword
+when you don't want to spell out the type explicitly.
+
+There are two lambda forms:
+
+```cs
+// Arrow form: a single expression body.
+var inc = func(int x) => x + 1;
+
+// Block form: a full body with `return`.
+var sqr = func(int x) {
+    return x * x;
+};
+
+// A higher-order function takes a callable parameter.
+int apply(var fn, int x) {
+    return fn(x);
+}
+
+Console.WriteLine(apply(inc, 4));   // 5
+Console.WriteLine(apply(sqr, 4));   // 16
+```
+
+Top-level functions can also be used as values:
+
+```cs
+int dbl(int x) { return x + x; }
+
+var f = dbl;
+Console.WriteLine(f(21));           // 42
+Console.WriteLine(apply(dbl, 10));  // 20
+```
+
+**Capture rules.** Lambdas capture **only globals**, not the
+surrounding local variables. If you need outer state, pass it through
+a parameter or store it in a global / a struct field.
+
+```cs
+int counter = 0;            // global
+
+var bump = func() {
+    counter = counter + 1;  // OK: globals are visible
+    return counter;
+};
+```
+
+---
+
+## 17b. Generics
+
+Function declarations may introduce **type parameters** in angle
+brackets after the name. Type parameters work as opaque type names
+inside the parameter list and the return type:
+
+```cs
+T identity<T>(T x) {
+    return x;
+}
+
+T pickFirst<T, U>(T a, U b) {
+    return a;
+}
+
+Console.WriteLine(identity(42));        // 42
+Console.WriteLine(identity("hi"));      // hi
+Console.WriteLine(pickFirst(1, "x"));   // 1
+```
+
+Generics in StarByte are **type-erased**: there is no per-instantiation
+specialization. The runtime accepts any value, so the same generic
+function works with all argument types. Generic syntax is currently
+allowed only on **declarations**, not on call sites — `f<int>(x)` is
+not yet parsed (write `f(x)` instead).
+
+---
+
+## 17c. Coroutines
+
+StarByte ships symmetric stackful coroutines built on POSIX
+`ucontext`. Four builtins make up the API:
+
+| Builtin                | Returns        | Purpose                                                 |
+| ---------------------- | -------------- | ------------------------------------------------------- |
+| `co_create(fn, arg)`   | coroutine      | Create a new coroutine that will run `fn(arg)`.         |
+| `co_resume(co, [val])` | yielded value  | Run/continue `co`. The optional `val` is sent in.       |
+| `co_yield(val)`        | resumed value  | Suspend the current coroutine, passing `val` to caller. |
+| `co_done(co)`          | bool           | `true` once the coroutine returned.                     |
+
+A simple generator:
+
+```cs
+var squares = func(var n) {
+    for (int i = 0; i < n; i++) {
+        co_yield(i * i);
+    }
+    return -1;
+};
+
+var co = co_create(squares, 5);
+while (!co_done(co)) {
+    var v = co_resume(co);
+    if (co_done(co)) break;
+    Console.WriteLine(v);            // 0 1 4 9 16
+}
+```
+
+Notes and limitations:
+
+- Each coroutine owns a private 128 KiB stack.
+- Available in **both** the interpreter and the native backend.
+- **Linux / POSIX only.** A Windows fiber-based implementation is on
+  the roadmap; calling these builtins on Windows raises an error.
+- The value passed to `co_yield` is what the matching `co_resume`
+  call returns. The value passed to `co_resume` is what the matching
+  `co_yield` call returns.
+
+---
+
 ## 18. Style Guide
 
 - Indentation: 4 spaces, no tabs.
@@ -859,12 +980,14 @@ starbyte example.sb
 
 ## 21. What's Not Yet Supported
 
-These are planned but not in v0.8.1:
+These are planned but not in v0.9.0:
 
 - Arrays with built-in iteration syntax (use buffers + `for`)
 - Catch-by-type filtering (every catch is a catch-all today)
-- Generics, lambdas, coroutines
+- True closures over local variables (lambdas only capture globals)
+- Generic constraints / specialization (generics are type-erased)
 - Multi-file projects with user-defined modules
 - `File`, `Network` standard libraries
+- Coroutines on Windows (POSIX `ucontext` only)
 
 See the roadmap in [README.md](../README.md) for current status.

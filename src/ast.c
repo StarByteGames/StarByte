@@ -48,6 +48,14 @@ void node_free(Node *n) {
             node_free(n->as.index_expr.object);
             node_free(n->as.index_expr.index);
             break;
+        case EX_LAMBDA:
+            for (size_t i = 0; i < n->as.lambda.param_count; i++) {
+                typeref_free(&n->as.lambda.params[i].type);
+                free(n->as.lambda.params[i].name);
+            }
+            free(n->as.lambda.params);
+            node_free(n->as.lambda.body);
+            break;
         case ST_EXPR: node_free(n->as.expr_stmt.expr); break;
         case ST_VAR_DECL:
             typeref_free(&n->as.var_decl.type);

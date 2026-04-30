@@ -10,6 +10,7 @@ typedef struct {
     Token peek;
     const char *filename;
     bool has_peek;
+    int  lambda_seq;   /* fresh ids for EX_LAMBDA nodes (used by codegen) */
 } Parser;
 
 void  parser_init(Parser *p, const char *source, const char *filename);

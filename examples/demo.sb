@@ -83,6 +83,16 @@ int safeDiv(int a, int b) {
     return a / b;
 }
 
+// Higher-order: nimmt eine beliebige (var) Funktion entgegen.
+int apply(var fn, int x) {
+    return fn(x);
+}
+
+// Generische Funktion (typgelöscht).
+T identity<T>(T x) {
+    return x;
+}
+
 // -----------------------------------------------------------------
 // main
 // -----------------------------------------------------------------
@@ -232,6 +242,35 @@ int main() {
         }
     } catch (string e) {
         Console.WriteLine("äußeres catch:", e);
+    }
+
+    // -------- Lambdas / first-class functions (0.9.0) --------
+    var inc  = func(int x) => x + 1;
+    var sqr  = func(int x) { return x * x; };
+    Console.WriteLine("inc(4)  =", inc(4));
+    Console.WriteLine("sqr(4)  =", sqr(4));
+    Console.WriteLine("apply(inc, 10) =", apply(inc, 10));
+    Console.WriteLine("apply(sqr, 10) =", apply(sqr, 10));
+    // Top-level Funktionen sind ebenfalls first-class:
+    Console.WriteLine("apply(abs, -7) =", apply(abs, -7));
+
+    // -------- Generics (typgelöscht, 0.9.0) --------
+    Console.WriteLine("identity(42)    =", identity(42));
+    Console.WriteLine("identity(\"hi\") =", identity("hi"));
+    Console.WriteLine("identity(true)  =", identity(true));
+
+    // -------- Coroutines (POSIX, 0.9.0) --------
+    var gen = func(var n) {
+        for (int i = 0; i < n; i++) {
+            co_yield(i * i);
+        }
+        return -1;
+    };
+    var co = co_create(gen, 5);
+    while (!co_done(co)) {
+        var val = co_resume(co);
+        if (co_done(co)) break;
+        Console.WriteLine("coroutine yields", val);
     }
 
     Console.WriteLine("===== Demo fertig =====");

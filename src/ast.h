@@ -16,6 +16,7 @@ typedef enum {
     EX_LOGICAL,        /* && || (short-circuit) */
     EX_STRUCT_LIT,     /* { e1, e2, ... } brace initializer */
     EX_INDEX,          /* obj[idx] -- buffer indexing */
+    EX_LAMBDA,         /* func(params) { body }  or  func(params) => expr */
 
     /* Statements */
     ST_EXPR,
@@ -134,6 +135,17 @@ struct Node {
             size_t param_count;
             Node *body;       /* block */
         } func;
+
+        /* Lambda: anonymous function expression. Owns its params and body
+           the same way ST_FUNC_DECL does. `id` is a unique zero-based
+           index assigned by the parser; the native backend uses it to
+           generate stable C symbol names (sb_lambda_<id>). */
+        struct {
+            Param *params;
+            size_t param_count;
+            Node *body;       /* block */
+            int   id;
+        } lambda;
 
         struct { char *name; } module_stmt;
 

@@ -1,4 +1,4 @@
-# StarByte 0.8.1
+# StarByte 0.9.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -10,6 +10,68 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > **Alpha release** — core language, interpreter, native compiler backend,
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
+
+## What's new in 0.9.0
+
+- **Lambdas / first-class functions** — anonymous functions with two
+  forms: an arrow-expression form `func(int x) => x + 1` and a
+  block-body form `func(int x) { return x * x; }`. Functions are
+  values, can be stored in variables (use the new `var` keyword for
+  inferred typing), passed as arguments, and returned from other
+  functions. Top-level functions can also be referenced by name as
+  values. Available in both the interpreter and the native backend.
+
+  ```cs
+  var inc  = func(int x) => x + 1;
+  var sqr  = func(int x) { return x * x; };
+  int apply(var fn, int x) { return fn(x); }
+  Console.WriteLine(apply(inc, 4));   // 5
+  Console.WriteLine(apply(sqr, 4));   // 16
+  ```
+
+  *Limitation:* lambdas capture only globals, not surrounding local
+  variables (true closures over locals will come in a later release).
+
+- **Generics (type-erased)** — function declarations can introduce type
+  parameters in angle brackets after the function name. Type parameters
+  act as opaque type names usable in the parameter list and return type:
+
+  ```cs
+  T identity<T>(T x) { return x; }
+  Console.WriteLine(identity(42));
+  Console.WriteLine(identity("hi"));
+  ```
+
+  Generics are currently type-erased: the runtime stores any value, and
+  no static instantiation or specialization is performed.
+
+- **Coroutines** — symmetric stackful coroutines using POSIX `ucontext`,
+  exposed through four builtins:
+
+  | Builtin                | Purpose                                            |
+  | ---------------------- | -------------------------------------------------- |
+  | `co_create(fn, arg)`   | Make a new coroutine wrapping `fn`, with one arg. |
+  | `co_resume(co, [val])` | Run/continue the coroutine; returns yielded value. |
+  | `co_yield(val)`        | Suspend the current coroutine, passing `val` out.  |
+  | `co_done(co)`          | `true` once the coroutine returned.                |
+
+  ```cs
+  var gen = func(var n) {
+      for (int i = 0; i < n; i++) co_yield(i * i);
+      return -1;
+  };
+  var co = co_create(gen, 5);
+  while (!co_done(co)) {
+      var v = co_resume(co);
+      if (co_done(co)) break;
+      Console.WriteLine(v);     // 0 1 4 9 16
+  }
+  ```
+
+  Available in both the interpreter and the native backend on Linux /
+  POSIX systems. Windows does not yet ship a coroutine implementation.
+
+- **New keywords:** `func`, `var`, `yield`. New token: `=>` (fat arrow).
 
 ## What's new in 0.8.1
 
@@ -353,7 +415,7 @@ Everything lives in the project directory:
 - [x] Classes/interfaces in native backend (`-o`)
 - [x] Manual memory and garbage collector
 - [x] Exceptions (`try` / `catch` / `throw`)
-- [ ] Generics, lambdas, coroutines
+- [x] Generics, lambdas, coroutines
 - [ ] Expanded stdlib (`File`, `Network`, `Collections`)
 
 ## License

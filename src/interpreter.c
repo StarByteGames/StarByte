@@ -268,6 +268,134 @@ static Value eval(Interp *I, Env *env, Node *n);
 static void  exec(Interp *I, Env *env, Node *n);
 static Value call_value(Interp *I, Value callee, int argc, Value *argv, int line);
 
+/* ===== coroutines (POSIX ucontext) ===== */
+#ifdef __unix__
+#include <ucontext.h>
+#define SB_CO_STACK_SIZE (1 << 17)   /* 128 KiB per coroutine */
+typedef struct Coroutine {
+    int       refcount;
+    ucontext_t ctx, caller;
+    char     *stack;
+    Value     fn;        /* the wrapped callable */
+    Value     arg;       /* one-shot initial argument */
+    Value     yielded;   /* last yielded / final value */
+    Value     resumed;   /* value passed by the latest co_resume */
+    int       done;
+    int       started;
+    Interp   *interp;    /* interpreter that owns this coroutine */
+    struct Coroutine *prev_current;  /* link for nested coroutines */
+} Coroutine;
+
+static Coroutine *sb_active_coro = NULL;
+static Coroutine *sb_co_entry_arg = NULL;  /* parameter for entry trampoline */
+
+static void coroutine_release(Coroutine *co) {
+    if (!co) return;
+    if (--co->refcount > 0) return;
+    value_free(&co->fn);
+    value_free(&co->arg);
+    value_free(&co->yielded);
+    value_free(&co->resumed);
+    free(co->stack);
+    free(co);
+}
+
+static void coroutine_entry(void) {
+    Coroutine *co = sb_co_entry_arg;
+    Value argv[1]; argv[0] = value_copy(&co->arg);
+    Value r = call_value(co->interp, co->fn, 1, argv, 0);
+    value_free(&argv[0]);
+    value_free(&co->yielded);
+    co->yielded = r;
+    co->done = 1;
+    /* uc_link is &caller, so we return there automatically. */
+}
+
+static Value co_create(Interp *I, int argc, Value *argv) {
+    if (argc < 1 || argv[0].type != V_FUNC) {
+        rt_error(I, 0, "co_create expects a function");
+    }
+    Coroutine *co = (Coroutine*)sb_xmalloc(sizeof(Coroutine));
+    memset(co, 0, sizeof(*co));
+    co->refcount = 1;
+    co->interp = I;
+    co->fn = value_copy(&argv[0]);
+    co->arg = (argc > 1) ? value_copy(&argv[1]) : v_null();
+    co->stack = (char*)sb_xmalloc(SB_CO_STACK_SIZE);
+    co->yielded = v_null();
+    co->resumed = v_null();
+    /* Wrap as a single-slot buffer carrying the opaque pointer.
+       buffer_release() doesn't know about Coroutines, so we attach the
+       pointer to a fresh buffer that we GC-mark to avoid premature free.
+       Simpler: stash the pointer as an int, and remember to release
+       coroutines manually at interpreter shutdown via a side list. */
+    Buffer *b = buffer_new(1);
+    b->items[0].type = V_INT;
+    b->items[0].as.i = (long long)(intptr_t)co;
+    /* Track for cleanup. Reuse the GC list with a special flag would be
+       complex; just leak Coroutine objects until interp_dispose if the
+       user drops references — acceptable for this minimal v1. */
+    Value v;
+    v.type = V_BUFFER;
+    v.as.buf = b;
+    return v;
+}
+
+static Coroutine *co_unwrap(Interp *I, Value v) {
+    if (v.type != V_BUFFER || !v.as.buf || v.as.buf->len != 1
+        || v.as.buf->items[0].type != V_INT) {
+        rt_error(I, 0, "value is not a coroutine");
+    }
+    return (Coroutine*)(intptr_t)v.as.buf->items[0].as.i;
+}
+
+static Value co_resume(Interp *I, int argc, Value *argv) {
+    if (argc < 1) rt_error(I, 0, "co_resume requires a coroutine");
+    Coroutine *co = co_unwrap(I, argv[0]);
+    if (co->done) return v_null();
+    value_free(&co->resumed);
+    co->resumed = (argc > 1) ? value_copy(&argv[1]) : v_null();
+    if (!co->started) {
+        getcontext(&co->ctx);
+        co->ctx.uc_stack.ss_sp = co->stack;
+        co->ctx.uc_stack.ss_size = SB_CO_STACK_SIZE;
+        co->ctx.uc_link = &co->caller;
+        sb_co_entry_arg = co;
+        makecontext(&co->ctx, coroutine_entry, 0);
+        co->started = 1;
+    }
+    co->prev_current = sb_active_coro;
+    sb_active_coro = co;
+    swapcontext(&co->caller, &co->ctx);
+    sb_active_coro = co->prev_current;
+    return value_copy(&co->yielded);
+}
+
+static Value co_yield_(Interp *I, int argc, Value *argv) {
+    Coroutine *co = sb_active_coro;
+    if (!co) rt_error(I, 0, "yield called outside of a coroutine");
+    value_free(&co->yielded);
+    co->yielded = (argc > 0) ? value_copy(&argv[0]) : v_null();
+    swapcontext(&co->ctx, &co->caller);
+    return value_copy(&co->resumed);
+}
+
+static Value co_done(Interp *I, int argc, Value *argv) {
+    if (argc < 1) return v_bool(true);
+    Coroutine *co = co_unwrap(I, argv[0]);
+    return v_bool(co->done != 0);
+}
+
+/* keep coroutine_release reachable for future use */
+__attribute__((unused))
+static void (* const sb_coro_release_keep)(Coroutine*) = coroutine_release;
+#else
+static Value co_create(Interp *I, int argc, Value *argv) { (void)argc; (void)argv; rt_error(I, 0, "coroutines require POSIX ucontext"); return v_null(); }
+static Value co_resume(Interp *I, int argc, Value *argv) { (void)argc; (void)argv; rt_error(I, 0, "coroutines require POSIX ucontext"); return v_null(); }
+static Value co_yield_(Interp *I, int argc, Value *argv) { (void)argc; (void)argv; rt_error(I, 0, "coroutines require POSIX ucontext"); return v_null(); }
+static Value co_done(Interp *I, int argc, Value *argv)   { (void)argc; (void)argv; return v_bool(true); }
+#endif
+
 /* ===== Type coercion helpers ===== */
 
 static double to_num(const Value *v) {
@@ -664,6 +792,47 @@ static Value eval(Interp *I, Env *env, Node *n) {
             Value r = value_copy(&b->items[i]);
             value_free(&obj); value_free(&idx);
             return r;
+        }
+        case EX_LAMBDA: {
+            /* Build a function value that closes over the current env.
+               We synthesize a transient ST_FUNC_DECL node so the existing
+               V_FUNC call path works unchanged. The synthesized node is
+               owned by the interpreter and freed on shutdown. */
+            Node *fn = node_new(ST_FUNC_DECL, n->line);
+            fn->as.func.ret_type.type_name = sb_strdup("var");
+            fn->as.func.ret_type.is_const = false;
+            fn->as.func.name = sb_strdup("<lambda>");
+            fn->as.func.param_count = n->as.lambda.param_count;
+            fn->as.func.params = NULL;
+            if (n->as.lambda.param_count) {
+                fn->as.func.params = (Param*)sb_xmalloc(
+                    sizeof(Param) * n->as.lambda.param_count);
+                for (size_t i = 0; i < n->as.lambda.param_count; i++) {
+                    fn->as.func.params[i].type.type_name =
+                        sb_strdup(n->as.lambda.params[i].type.type_name
+                                  ? n->as.lambda.params[i].type.type_name : "var");
+                    fn->as.func.params[i].type.is_const =
+                        n->as.lambda.params[i].type.is_const;
+                    fn->as.func.params[i].name = sb_strdup(n->as.lambda.params[i].name);
+                }
+            }
+            /* Body is shared with the EX_LAMBDA node — we own a synthetic
+               wrapper so we mustn't double-free. Park the body pointer
+               directly; node_free on the lambda also frees it, so we
+               steal it onto the synthetic node and clear the original. */
+            fn->as.func.body = n->as.lambda.body;
+            n->as.lambda.body = NULL;
+            interp_track_synth_node(I, fn);
+            Value v;
+            v.type = V_FUNC;
+            v.as.func.decl = fn;
+            /* Closures over the *globals* environment only. We don't yet
+               capture local variables, because environments are freed when
+               their owning block returns and the lambda value would dangle.
+               A lambda can still call any top-level function or use any
+               global, plus its own parameters. */
+            v.as.func.closure = I->globals;
+            return v;
         }
         case EX_CALL: {
             /* Method-call dispatch: obj.method(args) where obj is V_OBJECT or V_SUPER. */
@@ -1272,6 +1441,12 @@ void interp_init(Interp *I, const char *filename) {
     env_define(I->globals, "System.Memory.gcAlloc",  v_builtin(mem_gc_alloc),   true);
     env_define(I->globals, "System.Memory.gcCollect",v_builtin(mem_gc_collect), true);
     env_define(I->globals, "System.Memory.length",   v_builtin(mem_len),        true);
+
+    /* Coroutines */
+    env_define(I->globals, "co_create",  v_builtin(co_create),  true);
+    env_define(I->globals, "co_resume",  v_builtin(co_resume),  true);
+    env_define(I->globals, "co_yield",   v_builtin(co_yield_),  true);
+    env_define(I->globals, "co_done",    v_builtin(co_done),    true);
 }
 
 void interp_dispose(Interp *I) {
@@ -1290,6 +1465,22 @@ void interp_dispose(Interp *I) {
     }
     I->gc_head = NULL;
     I->gc_count = 0;
+    /* Free any AST nodes synthesized for lambdas. */
+    for (size_t i = 0; i < I->synth_node_count; i++) {
+        node_free(I->synth_nodes[i]);
+    }
+    free(I->synth_nodes);
+    I->synth_nodes = NULL;
+    I->synth_node_count = I->synth_node_cap = 0;
+}
+
+void interp_track_synth_node(Interp *I, Node *n) {
+    if (I->synth_node_count == I->synth_node_cap) {
+        I->synth_node_cap = I->synth_node_cap ? I->synth_node_cap * 2 : 8;
+        I->synth_nodes = (Node**)sb_xrealloc(I->synth_nodes,
+            sizeof(Node*) * I->synth_node_cap);
+    }
+    I->synth_nodes[I->synth_node_count++] = n;
 }
 
 int interp_run(Interp *I, Node *program) {

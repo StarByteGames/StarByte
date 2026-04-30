@@ -45,6 +45,9 @@ typedef enum {
     TK_KW_CATCH,
     TK_KW_FINALLY,
     TK_KW_THROW,
+    TK_KW_FUNC,
+    TK_KW_YIELD,
+    TK_KW_VAR,
 
     /* punctuation */
     TK_LPAREN,    /* ( */
@@ -65,7 +68,8 @@ typedef enum {
     TK_PLUSEQ, TK_MINUSEQ, TK_STAREQ, TK_SLASHEQ, TK_PERCENTEQ,
     TK_EQ, TK_NEQ, TK_LT, TK_GT, TK_LE, TK_GE,
     TK_AND, TK_OR, TK_NOT,
-    TK_QUESTION
+    TK_QUESTION,
+    TK_FATARROW   /* => */
 } TokenType;
 
 typedef struct {

@@ -47,7 +47,8 @@ void parser_dispose(Parser *p) {
 
 static bool is_type_keyword(TokenType t) {
     return t == TK_KW_INT || t == TK_KW_FLOAT || t == TK_KW_CHAR
-        || t == TK_KW_BOOL || t == TK_KW_STRING || t == TK_KW_VOID;
+        || t == TK_KW_BOOL || t == TK_KW_STRING || t == TK_KW_VOID
+        || t == TK_KW_VAR;
 }
 
 static const char *type_kw_name(TokenType t) {
@@ -58,6 +59,7 @@ static const char *type_kw_name(TokenType t) {
         case TK_KW_BOOL: return "bool";
         case TK_KW_STRING: return "string";
         case TK_KW_VOID: return "void";
+        case TK_KW_VAR: return "var";
         default: return "?";
     }
 }
@@ -92,6 +94,7 @@ static Node *parse_muldiv(Parser *p);
 static Node *parse_unary(Parser *p);
 static Node *parse_postfix(Parser *p);
 static Node *parse_primary(Parser *p);
+static Node *parse_block(Parser *p);
 
 static Node *parse_primary(Parser *p) {
     int line = p->cur.line;
@@ -130,6 +133,46 @@ static Node *parse_primary(Parser *p) {
                callable (constructs an instance). */
             advance(p);
             return parse_postfix(p);
+        }
+        case TK_KW_FUNC: {
+            /* Lambda expression:
+                 func(params) { body }
+                 func(params) => expr
+               Returns an EX_LAMBDA node. */
+            advance(p); /* func */
+            expect(p, TK_LPAREN, "'('");
+            Param *params = NULL; size_t pc = 0, pcap = 0;
+            if (!check(p, TK_RPAREN)) {
+                for (;;) {
+                    TypeRef pt = parse_type(p);
+                    if (p->cur.type != TK_IDENT) p_error(p, "expected lambda parameter name");
+                    char *pn = p->cur.svalue; p->cur.svalue = NULL;
+                    advance(p);
+                    if (pc == pcap) { pcap = pcap ? pcap*2 : 4; params = (Param*)sb_xrealloc(params, pcap*sizeof(Param)); }
+                    params[pc].type = pt; params[pc].name = pn; pc++;
+                    if (!match(p, TK_COMMA)) break;
+                }
+            }
+            expect(p, TK_RPAREN, "')'");
+            Node *body;
+            if (match(p, TK_FATARROW)) {
+                /* expression-bodied lambda: synthesize { return <expr>; } */
+                int bl = p->cur.line;
+                Node *e = parse_assign(p);
+                Node *ret = node_new(ST_RETURN, bl);
+                ret->as.ret.value = e;
+                Node *blk = node_new(ST_BLOCK, bl);
+                nodelist_push(&blk->as.block.stmts, ret);
+                body = blk;
+            } else {
+                body = parse_block(p);
+            }
+            Node *n = node_new(EX_LAMBDA, line);
+            n->as.lambda.params = params;
+            n->as.lambda.param_count = pc;
+            n->as.lambda.body = body;
+            n->as.lambda.id = p->lambda_seq++;
+            return n;
         }
         case TK_LPAREN: {
             advance(p);
@@ -376,6 +419,19 @@ static Node *parse_func_decl(Parser *p, TypeRef ret) {
     if (p->cur.type != TK_IDENT) p_error(p, "expected function name");
     char *name = p->cur.svalue; p->cur.svalue = NULL;
     advance(p);
+    /* Optional generic type-parameter list `<T, U, ...>`.
+       Parameters are type-erased: the names are accepted as type
+       annotations everywhere a user-defined type would be valid. */
+    if (match(p, TK_LT)) {
+        if (p->cur.type != TK_IDENT) p_error(p, "expected type parameter name");
+        for (;;) {
+            if (p->cur.type != TK_IDENT) p_error(p, "expected type parameter name");
+            free(p->cur.svalue); p->cur.svalue = NULL;
+            advance(p);
+            if (!match(p, TK_COMMA)) break;
+        }
+        if (!match(p, TK_GT)) p_error(p, "expected '>' to close generic parameter list");
+    }
     expect(p, TK_LPAREN, "'('");
     Param *params = NULL;
     size_t pc = 0, pcap = 0;
@@ -845,12 +901,11 @@ static Node *parse_stmt(Parser *p) {
 
     /* declaration vs expression-stmt: if token sequence is type ident '(' -> func; type ident -> var; else expr */
     if (starts_type(p)) {
-        /* lookahead: peek after type to detect form */
         /* simplest: parse type, then look at ident, then peek next */
         TypeRef ty = parse_type(p);
         if (p->cur.type != TK_IDENT) p_error(p, "expected identifier after type");
         Token *pk = peek_tok(p);
-        if (pk->type == TK_LPAREN) {
+        if (pk->type == TK_LPAREN || pk->type == TK_LT) {
             return parse_func_decl(p, ty);
         }
         return parse_var_decl(p, ty);
@@ -862,7 +917,7 @@ static Node *parse_stmt(Parser *p) {
         if (pk->type == TK_IDENT) {
             TypeRef ty = parse_type(p);
             Token *pk2 = peek_tok(p);
-            if (pk2->type == TK_LPAREN) return parse_func_decl(p, ty);
+            if (pk2->type == TK_LPAREN || pk2->type == TK_LT) return parse_func_decl(p, ty);
             return parse_var_decl(p, ty);
         }
     }

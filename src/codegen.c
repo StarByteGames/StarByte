@@ -16,14 +16,18 @@ static const char *RUNTIME_C =
 "#include <stdarg.h>\n"
 "#include <math.h>\n"
 "#include <stddef.h>\n"
+"#include <stdint.h>\n"
 "#include <setjmp.h>\n"
 "\n"
-"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT, SB_BUFFER } sb_type;\n"
+"typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT, SB_BUFFER, SB_FUNC } sb_type;\n"
 "\n"
 "struct sb_struct;\n"
 "struct sb_buffer;\n"
 "\n"
-"typedef struct {\n"
+"typedef struct sb_value sb_value;\n"
+"typedef sb_value (*sb_lam_fn)(int argc, sb_value *argv);\n"
+"\n"
+"struct sb_value {\n"
 "    sb_type t;\n"
 "    union {\n"
 "        long long i;\n"
@@ -33,8 +37,9 @@ static const char *RUNTIME_C =
 "        char     *s;\n"
 "        struct sb_struct *st;\n"
 "        struct sb_buffer *bf;\n"
+"        sb_lam_fn fn;\n"
 "    } v;\n"
-"} sb_value;\n"
+"};\n"
 "\n"
 "typedef struct sb_field { char *name; sb_value v; } sb_field;\n"
 "typedef struct sb_struct {\n"
@@ -76,6 +81,7 @@ static const char *RUNTIME_C =
 "        case SB_STRING:return v.v.s && v.v.s[0];\n"
 "        case SB_STRUCT:return v.v.st!=0;\n"
 "        case SB_BUFFER:return v.v.bf!=0 && !v.v.bf->freed;\n"
+"        case SB_FUNC:  return v.v.fn!=0;\n"
 "    }\n"
 "    return 0;\n"
 "}\n"
@@ -124,6 +130,7 @@ static const char *RUNTIME_C =
 "            #undef SBAPP2\n"
 "            return out;\n"
 "        }\n"
+"        case SB_FUNC: { char b[32]; snprintf(b,sizeof b,\"<func:%p>\",(void*)v.v.fn); return sb_strdup_(b); }\n"
 "    }\n"
 "    return sb_strdup_(\"\");\n"
 "}\n"
@@ -555,6 +562,109 @@ static const char *RUNTIME_C =
 "    longjmp(sb_exc_stack->env, 1);\n"
 "}\n"
 "\n"
+"/* ----- first-class functions / lambdas ----- */\n"
+"static sb_value sb_make_func(sb_lam_fn fn){ sb_value v; v.t=SB_FUNC; v.v.fn=fn; return v; }\n"
+"static sb_value sb_call(sb_value callee, int argc, ...){\n"
+"    if (callee.t != SB_FUNC || !callee.v.fn) sb_die(\"value is not callable\");\n"
+"    sb_value *argv = argc ? sb_xmalloc(sizeof(sb_value)*(size_t)argc) : NULL;\n"
+"    va_list ap; va_start(ap, argc);\n"
+"    for (int i = 0; i < argc; i++) argv[i] = va_arg(ap, sb_value);\n"
+"    va_end(ap);\n"
+"    sb_value r = callee.v.fn(argc, argv);\n"
+"    free(argv);\n"
+"    return r;\n"
+"}\n"
+"\n"
+"/* ----- coroutines (POSIX ucontext) ----- */\n"
+"#ifdef __unix__\n"
+"#include <ucontext.h>\n"
+"#define SB_CO_STACK 65536\n"
+"typedef struct sb_coro {\n"
+"    ucontext_t ctx, caller;\n"
+"    char stack[SB_CO_STACK];\n"
+"    sb_lam_fn fn;\n"
+"    sb_value  arg;\n"
+"    sb_value  yielded;\n"
+"    sb_value  resumed;\n"
+"    int       done;\n"
+"    int       started;\n"
+"} sb_coro;\n"
+"static sb_coro *sb_current_coro = NULL;\n"
+"static void sb_coro_entry(void){\n"
+"    sb_coro *co = sb_current_coro;\n"
+"    sb_value argv[1]; argv[0] = co->arg;\n"
+"    sb_value r = co->fn(1, argv);\n"
+"    co->yielded = r;\n"
+"    co->done = 1;\n"
+"    /* fall through; swapcontext at end returns to caller via uc_link */\n"
+"}\n"
+"static sb_value sb_co_create(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value fnv = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    sb_value arg = (argc>1)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    if (fnv.t != SB_FUNC) sb_die(\"co_create expects a function\");\n"
+"    sb_coro *co = sb_xmalloc(sizeof(sb_coro));\n"
+"    memset(co, 0, sizeof(*co));\n"
+"    co->fn = fnv.v.fn;\n"
+"    co->arg = arg;\n"
+"    /* Wrap the coroutine handle as a buffer of length 1 holding an opaque\n"
+"       pointer; the resume/yield/done builtins know how to read it. */\n"
+"    sb_buffer *b = sb_buffer_new(1);\n"
+"    b->items[0].t = SB_INT;\n"
+"    b->items[0].v.i = (long long)(intptr_t)co;\n"
+"    sb_value r; r.t=SB_BUFFER; r.v.bf=b; return r;\n"
+"}\n"
+"static sb_coro *sb_co_unwrap(sb_value v){\n"
+"    if (v.t != SB_BUFFER || !v.v.bf || v.v.bf->n != 1) sb_die(\"not a coroutine\");\n"
+"    return (sb_coro*)(intptr_t)v.v.bf->items[0].v.i;\n"
+"}\n"
+"static sb_value sb_co_resume(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value cv = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    sb_value rv = (argc>1)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    sb_coro *co = sb_co_unwrap(cv);\n"
+"    if (co->done) return sb_null();\n"
+"    co->resumed = rv;\n"
+"    if (!co->started){\n"
+"        getcontext(&co->ctx);\n"
+"        co->ctx.uc_stack.ss_sp = co->stack;\n"
+"        co->ctx.uc_stack.ss_size = SB_CO_STACK;\n"
+"        co->ctx.uc_link = &co->caller;\n"
+"        makecontext(&co->ctx, sb_coro_entry, 0);\n"
+"        co->started = 1;\n"
+"    }\n"
+"    sb_coro *prev = sb_current_coro;\n"
+"    sb_current_coro = co;\n"
+"    swapcontext(&co->caller, &co->ctx);\n"
+"    sb_current_coro = prev;\n"
+"    return co->yielded;\n"
+"}\n"
+"static sb_value sb_co_yield(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value v = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    sb_coro *co = sb_current_coro;\n"
+"    if (!co) sb_die(\"yield called outside of a coroutine\");\n"
+"    co->yielded = v;\n"
+"    swapcontext(&co->ctx, &co->caller);\n"
+"    return co->resumed;\n"
+"}\n"
+"static sb_value sb_co_done(int argc, ...){\n"
+"    va_list ap; va_start(ap,argc);\n"
+"    sb_value cv = (argc>0)?va_arg(ap,sb_value):sb_null();\n"
+"    va_end(ap);\n"
+"    sb_coro *co = sb_co_unwrap(cv);\n"
+"    return sb_bool(co->done);\n"
+"}\n"
+"#else\n"
+"static sb_value sb_co_create(int argc, ...){ (void)argc; sb_die(\"coroutines require POSIX ucontext\"); return sb_null(); }\n"
+"static sb_value sb_co_resume(int argc, ...){ (void)argc; sb_die(\"coroutines require POSIX ucontext\"); return sb_null(); }\n"
+"static sb_value sb_co_yield(int argc, ...){ (void)argc; sb_die(\"coroutines require POSIX ucontext\"); return sb_null(); }\n"
+"static sb_value sb_co_done(int argc, ...){ (void)argc; sb_die(\"coroutines require POSIX ucontext\"); return sb_null(); }\n"
+"#endif\n"
+"\n"
 "/* --- end runtime --- */\n";
 
 /* ============================================================
@@ -587,7 +697,98 @@ typedef struct {
         long long   value;
     } *enums;
     size_t      enum_count;
+
+    /* Lambdas collected from the program. Each gets a unique id and
+       is emitted as a top-level `sb_lambda_<id>(int argc, sb_value *argv)`
+       function. The lambda site itself becomes `sb_make_func(...)`. */
+    Node      **lambdas;
+    size_t      lambda_count;
+    size_t      lambda_cap;
+
+    /* program root, used for known-name lookups in callsite codegen */
+    Node       *program;
 } Cg;
+
+static void cg_register_lambda(Cg *g, Node *n) {
+    if (g->lambda_count == g->lambda_cap) {
+        g->lambda_cap = g->lambda_cap ? g->lambda_cap * 2 : 8;
+        g->lambdas = (Node**)sb_xrealloc(g->lambdas, sizeof(Node*) * g->lambda_cap);
+    }
+    n->as.lambda.id = (int)g->lambda_count;
+    g->lambdas[g->lambda_count++] = n;
+}
+
+static void cg_collect_lambdas(Cg *g, Node *n) {
+    if (!n) return;
+    switch (n->kind) {
+        case EX_LAMBDA:
+            cg_register_lambda(g, n);
+            cg_collect_lambdas(g, n->as.lambda.body);
+            break;
+        case EX_BINARY: cg_collect_lambdas(g, n->as.binary.lhs); cg_collect_lambdas(g, n->as.binary.rhs); break;
+        case EX_LOGICAL: cg_collect_lambdas(g, n->as.logical.lhs); cg_collect_lambdas(g, n->as.logical.rhs); break;
+        case EX_UNARY: cg_collect_lambdas(g, n->as.unary.operand); break;
+        case EX_POSTFIX: cg_collect_lambdas(g, n->as.postfix.operand); break;
+        case EX_ASSIGN: cg_collect_lambdas(g, n->as.assign.target); cg_collect_lambdas(g, n->as.assign.value); break;
+        case EX_CALL:
+            cg_collect_lambdas(g, n->as.call.callee);
+            for (size_t i = 0; i < n->as.call.args.count; i++)
+                cg_collect_lambdas(g, n->as.call.args.items[i]);
+            break;
+        case EX_MEMBER: cg_collect_lambdas(g, n->as.member.object); break;
+        case EX_INDEX: cg_collect_lambdas(g, n->as.index_expr.object);
+                       cg_collect_lambdas(g, n->as.index_expr.index); break;
+        case EX_STRUCT_LIT:
+            for (size_t i = 0; i < n->as.struct_lit.values.count; i++)
+                cg_collect_lambdas(g, n->as.struct_lit.values.items[i]);
+            break;
+        case ST_EXPR: cg_collect_lambdas(g, n->as.expr_stmt.expr); break;
+        case ST_VAR_DECL: cg_collect_lambdas(g, n->as.var_decl.init); break;
+        case ST_BLOCK:
+            for (size_t i = 0; i < n->as.block.stmts.count; i++)
+                cg_collect_lambdas(g, n->as.block.stmts.items[i]);
+            break;
+        case ST_IF: cg_collect_lambdas(g, n->as.if_stmt.cond);
+                    cg_collect_lambdas(g, n->as.if_stmt.then_branch);
+                    cg_collect_lambdas(g, n->as.if_stmt.else_branch); break;
+        case ST_WHILE: cg_collect_lambdas(g, n->as.while_stmt.cond);
+                       cg_collect_lambdas(g, n->as.while_stmt.body); break;
+        case ST_FOR: cg_collect_lambdas(g, n->as.for_stmt.init);
+                     cg_collect_lambdas(g, n->as.for_stmt.cond);
+                     cg_collect_lambdas(g, n->as.for_stmt.post);
+                     cg_collect_lambdas(g, n->as.for_stmt.body); break;
+        case ST_RETURN: cg_collect_lambdas(g, n->as.ret.value); break;
+        case ST_FUNC_DECL: cg_collect_lambdas(g, n->as.func.body); break;
+        case ST_CLASS_DECL:
+            for (size_t i = 0; i < n->as.class_decl.field_count; i++)
+                cg_collect_lambdas(g, n->as.class_decl.fields[i].init);
+            for (size_t i = 0; i < n->as.class_decl.method_count; i++)
+                cg_collect_lambdas(g, n->as.class_decl.methods[i]);
+            break;
+        case ST_TRY: cg_collect_lambdas(g, n->as.try_stmt.body);
+                     cg_collect_lambdas(g, n->as.try_stmt.catch_body);
+                     cg_collect_lambdas(g, n->as.try_stmt.finally_body); break;
+        case ST_THROW: cg_collect_lambdas(g, n->as.throw_stmt.value); break;
+        default: break;
+    }
+}
+
+static bool cg_known_func_name(Cg *g, Node *program, const char *name) {
+    if (!name) return false;
+    (void)g;
+    for (size_t i = 0; i < program->as.block.stmts.count; i++) {
+        Node *s = program->as.block.stmts.items[i];
+        if (s->kind == ST_FUNC_DECL && strcmp(s->as.func.name, name) == 0) return true;
+    }
+    return false;
+}
+
+static Node *find_class_decl(Cg *g, const char *name);
+static bool cg_is_known_call_name(Cg *g, const char *name) {
+    if (g->program && cg_known_func_name(g, g->program, name)) return true;
+    if (find_class_decl(g, name)) return true;
+    return false;
+}
 
 static Node *find_struct_decl(Cg *g, const char *name) {
     if (!name) return NULL;
@@ -702,6 +903,11 @@ static const char *map_builtin(const char *dotted) {
     if (!strcmp(dotted, "gc_alloc")   || !strcmp(dotted, "Memory.gcAlloc")    || !strcmp(dotted, "System.Memory.gcAlloc"))    return "sb_gc_alloc_";
     if (!strcmp(dotted, "gc_collect") || !strcmp(dotted, "Memory.gcCollect")  || !strcmp(dotted, "System.Memory.gcCollect"))  return "sb_gc_collect_";
     if (!strcmp(dotted, "len")        || !strcmp(dotted, "Memory.length")     || !strcmp(dotted, "System.Memory.length"))     return "sb_len_";
+    /* coroutines */
+    if (!strcmp(dotted, "co_create")) return "sb_co_create";
+    if (!strcmp(dotted, "co_resume")) return "sb_co_resume";
+    if (!strcmp(dotted, "co_yield"))  return "sb_co_yield";
+    if (!strcmp(dotted, "co_done"))   return "sb_co_done";
     return NULL;
 }
 
@@ -802,10 +1008,21 @@ static void cg_call(Cg *g, Node *n) {
                     free(dotted);
                     return;
                 }
-                /* user-defined function */
-                fprintf(g->out, "sb_fn_%s(", dotted);
+                /* Known top-level function: emit direct C call.
+                   Otherwise treat as a value-call (lambda / first-class fn). */
+                if (cg_known_func_name(g, g->program, dotted)) {
+                    fprintf(g->out, "sb_fn_%s(", dotted);
+                    for (int i = 0; i < argc; i++) {
+                        if (i) fputs(", ", g->out);
+                        cg_expr(g, n->as.call.args.items[i]);
+                    }
+                    fputc(')', g->out);
+                    free(dotted);
+                    return;
+                }
+                fprintf(g->out, "sb_call(%s, %d", dotted, argc);
                 for (int i = 0; i < argc; i++) {
-                    if (i) fputs(", ", g->out);
+                    fputs(", ", g->out);
                     cg_expr(g, n->as.call.args.items[i]);
                 }
                 fputc(')', g->out);
@@ -829,7 +1046,15 @@ static void cg_call(Cg *g, Node *n) {
             return;
         }
     }
-    cg_die("unsupported call form", n->line);
+    /* Generic indirect call -- e.g. (lambda)(x), arr[i](y), etc. */
+    fputs("sb_call(", g->out);
+    cg_expr(g, callee);
+    fprintf(g->out, ", %d", argc);
+    for (int i = 0; i < argc; i++) {
+        fputs(", ", g->out);
+        cg_expr(g, n->as.call.args.items[i]);
+    }
+    fputc(')', g->out);
 }
 
 static void cg_expr(Cg *g, Node *n) {
@@ -845,9 +1070,17 @@ static void cg_expr(Cg *g, Node *n) {
             long long ev;
             if (find_enum_dotted(g, NULL, n->as.ident.name, &ev)) {
                 fprintf(g->out, "sb_int(%lldLL)", ev);
+            } else if (cg_is_known_call_name(g, n->as.ident.name)
+                       && cg_known_func_name(g, g->program, n->as.ident.name)) {
+                /* Used as a value -- wrap it as a first-class function. */
+                fprintf(g->out, "sb_make_func(sb_adapter_%s)", n->as.ident.name);
             } else {
                 fprintf(g->out, "%s", n->as.ident.name);
             }
+            break;
+        }
+        case EX_LAMBDA: {
+            fprintf(g->out, "sb_make_func(sb_lambda_%d)", n->as.lambda.id);
             break;
         }
         case EX_BINARY: {
@@ -1333,6 +1566,7 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     Cg g = {0};
     g.out = f;
     g.src = src_filename;
+    g.program = program;
 
     /* Collect struct, enum, class, interface declarations (top-level only). */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
@@ -1393,6 +1627,10 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     fputs(RUNTIME_C, f);
     fputs("\n", f);
 
+    /* Discover all lambdas in the program (assigns ids). */
+    for (size_t i = 0; i < program->as.block.stmts.count; i++)
+        cg_collect_lambdas(&g, program->as.block.stmts.items[i]);
+
     /* forward declarations + detect main */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
@@ -1402,12 +1640,63 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
             if (strcmp(s->as.func.name, "main") == 0) g.has_main = true;
         }
     }
+    /* Forward decls + adapters for first-class function values. Every
+       top-level function gets an `sb_adapter_<name>` thunk that unpacks
+       (argc, argv) into the typed `sb_fn_<name>` call. */
+    for (size_t i = 0; i < program->as.block.stmts.count; i++) {
+        Node *s = program->as.block.stmts.items[i];
+        if (s->kind != ST_FUNC_DECL) continue;
+        fprintf(f, "static sb_value sb_adapter_%s(int argc, sb_value *argv);\n",
+                s->as.func.name);
+    }
+    /* Forward decls for lambda function bodies. */
+    for (size_t i = 0; i < g.lambda_count; i++) {
+        fprintf(f, "static sb_value sb_lambda_%d(int argc, sb_value *argv);\n",
+                (int)i);
+    }
     fputs("\n", f);
 
     /* function definitions */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
         if (s->kind == ST_FUNC_DECL) cg_emit_func_def(&g, s);
+    }
+    /* Adapter bodies. */
+    for (size_t i = 0; i < program->as.block.stmts.count; i++) {
+        Node *s = program->as.block.stmts.items[i];
+        if (s->kind != ST_FUNC_DECL) continue;
+        size_t pc = s->as.func.param_count;
+        fprintf(f, "static sb_value sb_adapter_%s(int argc, sb_value *argv) {\n",
+                s->as.func.name);
+        fputs("    (void)argc; (void)argv;\n", f);
+        fprintf(f, "    return sb_fn_%s(", s->as.func.name);
+        if (pc == 0) {
+            /* nothing */
+        } else {
+            for (size_t k = 0; k < pc; k++) {
+                if (k) fputs(", ", f);
+                fprintf(f, "(argc > %zu ? argv[%zu] : sb_null())", k, k);
+            }
+        }
+        fputs(");\n}\n\n", f);
+    }
+    /* Lambda bodies. */
+    for (size_t i = 0; i < g.lambda_count; i++) {
+        Node *l = g.lambdas[i];
+        fprintf(f, "static sb_value sb_lambda_%d(int argc, sb_value *argv) {\n",
+                (int)i);
+        fputs("    (void)argc; (void)argv;\n", f);
+        for (size_t k = 0; k < l->as.lambda.param_count; k++) {
+            fprintf(f, "    sb_value %s = (argc > %zu ? argv[%zu] : sb_null());\n",
+                    l->as.lambda.params[k].name, k, k);
+        }
+        g.indent = 1;
+        if (l->as.lambda.body && l->as.lambda.body->kind == ST_BLOCK) {
+            for (size_t k = 0; k < l->as.lambda.body->as.block.stmts.count; k++)
+                cg_stmt(&g, l->as.lambda.body->as.block.stmts.items[k]);
+        }
+        g.indent = 0;
+        fputs("    return sb_null();\n}\n\n", f);
     }
 
     /* ---- class emission ---- */
@@ -1497,6 +1786,7 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     free(g.structs);
     free(g.classes);
     free(g.ifaces);
+    free(g.lambdas);
     for (size_t i = 0; i < g.enum_count; i++) {
         free(g.enums[i].enum_name);
         free(g.enums[i].member);
@@ -1519,7 +1809,7 @@ int codegen_compile_c(const char *c_path, const char *exe_path, const char *cc_o
     /* simple shell-quoting: wrap each path in single quotes, escape any single quotes */
     char cmd[4096];
     int n = snprintf(cmd, sizeof cmd,
-        "%s -O2 -std=c11 -o '%s' '%s' -lm",
+        "%s -O2 -std=c11 -D_XOPEN_SOURCE=600 -o '%s' '%s' -lm",
         cc, exe_path, c_path);
     if (n < 0 || (size_t)n >= sizeof cmd) {
         fprintf(stderr, "starbyte: compile command too long\n");

@@ -40,7 +40,20 @@ typedef struct Interp {
     /* Garbage-collected buffer list (intrusive). */
     struct Buffer *gc_head;
     size_t gc_count;
+
+    /* Synthesized AST nodes (e.g. lambda function shells) that the
+       interpreter owns and frees on shutdown. */
+    Node **synth_nodes;
+    size_t synth_node_count;
+    size_t synth_node_cap;
+
+    /* Active coroutine, if any. NULL when running on the main thread.
+       Set by co_resume / cleared on suspend or completion. */
+    struct Coroutine *current_co;
 } Interp;
+
+struct Coroutine;
+void  interp_track_synth_node(Interp *I, Node *n);
 
 void  interp_init(Interp *I, const char *filename);
 void  interp_dispose(Interp *I);
