@@ -238,7 +238,7 @@ int main() {
 | `Strings` / `System.Strings` | `length`, `concat`                 |
 | globals                      | `print`, `println`                 |
 
-## Editor support
+<!-- ## Editor support
 
 A VS Code syntax-highlighting extension lives in [editor/vscode/](editor/vscode/).
 To use it locally, copy or symlink the folder into your VS Code extensions dir:
@@ -247,7 +247,7 @@ To use it locally, copy or symlink the folder into your VS Code extensions dir:
 ln -s "$PWD/editor/vscode" ~/.vscode/extensions/starbyte-language
 ```
 
-Then `.sb` files and ` ```starbyte ` Markdown blocks get highlighted.
+Then `.sb` files and ` ```starbyte ` Markdown blocks get highlighted. -->
 
 ## Files
 
