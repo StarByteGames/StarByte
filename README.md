@@ -1,4 +1,4 @@
-# StarByte 0.5.0
+# StarByte 0.6.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -11,6 +11,20 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
 
+## What's new in 0.6.0
+
+- **Classes and interfaces in the native backend** — `starbyte file.sb -o file`
+  now compiles `class`, `interface`, single inheritance, multiple interface
+  implementation, methods, fields with default initializers, constructors,
+  `this`, `super` (both `super.method(...)` and `super(...)` for constructor
+  delegation), and the optional `new` keyword. See
+  [examples/classes.sb](examples/classes.sb).
+- Interface conformance is now also checked at codegen time; missing methods
+  raise a clear compile-time error instead of being deferred to the
+  interpreter.
+- Method dispatch is dynamic (virtual): overrides in derived classes are
+  picked up at runtime, just like in the interpreter.
+
 ## What's new in 0.5.0
 
 - **Object orientation** — `class`, `interface`, single inheritance and
@@ -20,9 +34,8 @@ A fast, modern, general-purpose programming language — C-level performance, C#
   keyword. See [examples/classes.sb](examples/classes.sb).
 - Interface conformance is checked at class-declaration time; missing
   methods raise a clear runtime error.
-- Classes and interfaces currently run in the interpreter only;
-  `starbyte file.sb -o ...` will exit with a clear message if the
-  program uses them.
+- Classes and interfaces currently run in both the interpreter and the
+  native backend (`-o`).
 
 ## What's new in 0.4.0
 
@@ -214,7 +227,7 @@ int main() {
 | Modules       | `module a.b.c;`                                          |
 | Strings       | dynamic, `+` concatenates with anything                  |
 | Comments      | `//` and `/* ... */`                                     |
-| OOP           | `class`, `interface`, single inheritance, `this`, `super`, `new` (interpreter only) |
+| OOP           | `class`, `interface`, single inheritance, `this`, `super`, `new` (interpreter + native) |
 
 ### Standard library
 
@@ -259,7 +272,7 @@ Everything lives in the project directory:
 - [x] `struct` / `enum` runtime support (interpreter)
 - [x] `struct` / `enum` in native backend
 - [x] Classes, inheritance, interfaces (interpreter)
-- [ ] Classes/interfaces in native backend (`-o`)
+- [x] Classes/interfaces in native backend (`-o`)
 - [ ] Manual memory and garbage collector
 - [ ] Exceptions (`try` / `catch` / `throw`)
 - [ ] Generics, lambdas, coroutines

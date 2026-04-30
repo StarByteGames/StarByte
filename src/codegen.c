@@ -320,6 +320,96 @@ static const char *RUNTIME_C =
 "    return sb_null();\n"
 "}\n"
 "\n"
+"/* ----- class / object dispatch ----- */\n"
+"\n"
+"typedef sb_value (*sb_method_fn)(sb_value, int, sb_value*);\n"
+"typedef struct { const char *name; sb_method_fn fn; } sb_method_entry;\n"
+"typedef struct {\n"
+"    const char *name;\n"
+"    const char *parent;            /* may be NULL */\n"
+"    int n_methods;\n"
+"    const sb_method_entry *methods;\n"
+"    sb_method_fn ctor;             /* may be NULL */\n"
+"    sb_value (*alloc_init)(void);  /* allocate fresh instance + run field defaults */\n"
+"} sb_class_entry;\n"
+"\n"
+"static const sb_class_entry *sb_class_table = NULL;\n"
+"static int sb_class_table_n = 0;\n"
+"\n"
+"static const sb_class_entry *sb_find_class(const char *name) {\n"
+"    if (!name) return NULL;\n"
+"    for (int i = 0; i < sb_class_table_n; i++)\n"
+"        if (strcmp(sb_class_table[i].name, name)==0) return &sb_class_table[i];\n"
+"    return NULL;\n"
+"}\n"
+"static sb_method_fn sb_lookup_method_from(const char *cls, const char *method) {\n"
+"    const sb_class_entry *e = sb_find_class(cls);\n"
+"    while (e) {\n"
+"        for (int i = 0; i < e->n_methods; i++)\n"
+"            if (strcmp(e->methods[i].name, method)==0) return e->methods[i].fn;\n"
+"        e = e->parent ? sb_find_class(e->parent) : NULL;\n"
+"    }\n"
+"    return NULL;\n"
+"}\n"
+"static sb_value sb_dispatch(sb_value obj, const char *method, int argc, ...) {\n"
+"    if (obj.t != SB_STRUCT || !obj.v.st) sb_die(\"method call on non-object value\");\n"
+"    sb_method_fn fn = sb_lookup_method_from(obj.v.st->type_name, method);\n"
+"    if (!fn) sb_die(\"unknown method\");\n"
+"    sb_value *argv = argc ? sb_xmalloc(sizeof(sb_value)*(size_t)argc) : NULL;\n"
+"    va_list ap; va_start(ap, argc);\n"
+"    for (int i = 0; i < argc; i++) argv[i] = va_arg(ap, sb_value);\n"
+"    va_end(ap);\n"
+"    sb_value r = fn(obj, argc, argv);\n"
+"    free(argv);\n"
+"    return r;\n"
+"}\n"
+"static sb_value sb_dispatch_from(sb_value obj, const char *cls_start, const char *method, int argc, ...) {\n"
+"    sb_method_fn fn = sb_lookup_method_from(cls_start, method);\n"
+"    if (!fn) sb_die(\"unknown method (super)\");\n"
+"    sb_value *argv = argc ? sb_xmalloc(sizeof(sb_value)*(size_t)argc) : NULL;\n"
+"    va_list ap; va_start(ap, argc);\n"
+"    for (int i = 0; i < argc; i++) argv[i] = va_arg(ap, sb_value);\n"
+"    va_end(ap);\n"
+"    sb_value r = fn(obj, argc, argv);\n"
+"    free(argv);\n"
+"    return r;\n"
+"}\n"
+"static sb_value sb_call_ctor_chain(sb_value this_, const char *cls, int argc, ...) {\n"
+"    const sb_class_entry *e = sb_find_class(cls);\n"
+"    sb_method_fn ctor = NULL;\n"
+"    while (e) { if (e->ctor) { ctor = e->ctor; break; } e = e->parent ? sb_find_class(e->parent) : NULL; }\n"
+"    if (!ctor) {\n"
+"        if (argc != 0) sb_die(\"no parent constructor accepts arguments\");\n"
+"        return sb_null();\n"
+"    }\n"
+"    sb_value *argv = argc ? sb_xmalloc(sizeof(sb_value)*(size_t)argc) : NULL;\n"
+"    va_list ap; va_start(ap, argc);\n"
+"    for (int i = 0; i < argc; i++) argv[i] = va_arg(ap, sb_value);\n"
+"    va_end(ap);\n"
+"    sb_value r = ctor(this_, argc, argv); (void)r;\n"
+"    free(argv);\n"
+"    return sb_null();\n"
+"}\n"
+"static sb_value sb_new(const char *cls, int argc, ...) {\n"
+"    const sb_class_entry *e = sb_find_class(cls);\n"
+"    if (!e) sb_die(\"unknown class\");\n"
+"    sb_value obj = e->alloc_init();\n"
+"    const sb_class_entry *ce = e;\n"
+"    sb_method_fn ctor = NULL;\n"
+"    while (ce) { if (ce->ctor) { ctor = ce->ctor; break; } ce = ce->parent ? sb_find_class(ce->parent) : NULL; }\n"
+"    if (ctor) {\n"
+"        sb_value *argv = argc ? sb_xmalloc(sizeof(sb_value)*(size_t)argc) : NULL;\n"
+"        va_list ap; va_start(ap, argc);\n"
+"        for (int i = 0; i < argc; i++) argv[i] = va_arg(ap, sb_value);\n"
+"        va_end(ap);\n"
+"        sb_value r = ctor(obj, argc, argv); (void)r;\n"
+"        free(argv);\n"
+"    } else if (argc != 0) {\n"
+"        sb_die(\"class has no constructor but was called with arguments\");\n"
+"    }\n"
+"    return obj;\n"
+"}\n"
+"\n"
 "/* --- end runtime --- */\n";
 
 /* ============================================================
@@ -335,6 +425,14 @@ typedef struct {
     /* tracked declarations for struct/enum support */
     Node      **structs;        /* ST_STRUCT_DECL nodes */
     size_t      struct_count;
+    /* class declarations */
+    Node      **classes;        /* ST_CLASS_DECL nodes */
+    size_t      class_count;
+    /* interface declarations (for conformance checks) */
+    Node      **ifaces;
+    size_t      iface_count;
+    /* current class name while emitting a method body (for super), or NULL */
+    const char *cur_class;
     /* flat enum-member table for dotted/unqualified resolution */
     struct {
         char       *enum_name;  /* "Color" */
@@ -349,6 +447,38 @@ static Node *find_struct_decl(Cg *g, const char *name) {
     for (size_t i = 0; i < g->struct_count; i++) {
         if (strcmp(g->structs[i]->as.struct_decl.name, name) == 0)
             return g->structs[i];
+    }
+    return NULL;
+}
+
+static Node *find_class_decl(Cg *g, const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < g->class_count; i++) {
+        if (strcmp(g->classes[i]->as.class_decl.name, name) == 0)
+            return g->classes[i];
+    }
+    return NULL;
+}
+
+static Node *find_iface_decl(Cg *g, const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < g->iface_count; i++) {
+        if (strcmp(g->ifaces[i]->as.iface_decl.name, name) == 0)
+            return g->ifaces[i];
+    }
+    return NULL;
+}
+
+/* Find a method by name walking the class chain. Returns the FUNC_DECL
+   (skipping the constructor pseudo-method) or NULL. */
+static Node *find_method_in_chain(Cg *g, Node *cls, const char *name) {
+    for (Node *c = cls; c; c = c->as.class_decl.base_name ? find_class_decl(g, c->as.class_decl.base_name) : NULL) {
+        int ci = c->as.class_decl.ctor_index;
+        for (size_t i = 0; i < c->as.class_decl.method_count; i++) {
+            if ((int)i == ci) continue;
+            if (strcmp(c->as.class_decl.methods[i]->as.func.name, name) == 0)
+                return c->as.class_decl.methods[i];
+        }
     }
     return NULL;
 }
@@ -450,6 +580,46 @@ static void cg_call(Cg *g, Node *n) {
     Node *callee = n->as.call.callee;
     int argc = (int)n->as.call.args.count;
 
+    /* super(args) -- call parent constructor on 'this' */
+    if (callee->kind == EX_IDENT && strcmp(callee->as.ident.name, "super") == 0) {
+        if (!g->cur_class) cg_die("'super' used outside a class method", n->line);
+        Node *cd = find_class_decl(g, g->cur_class);
+        const char *parent = (cd && cd->as.class_decl.base_name) ? cd->as.class_decl.base_name : NULL;
+        if (!parent) cg_die("'super(...)' in class with no base class", n->line);
+        fprintf(g->out, "sb_call_ctor_chain(this, ");
+        cg_emit_c_string(g->out, parent);
+        fprintf(g->out, ", %d", argc);
+        for (int i = 0; i < argc; i++) {
+            fputs(", ", g->out);
+            cg_expr(g, n->as.call.args.items[i]);
+        }
+        fputc(')', g->out);
+        return;
+    }
+
+    /* super.method(args) */
+    if (callee->kind == EX_MEMBER
+        && callee->as.member.object
+        && callee->as.member.object->kind == EX_IDENT
+        && strcmp(callee->as.member.object->as.ident.name, "super") == 0)
+    {
+        if (!g->cur_class) cg_die("'super' used outside a class method", n->line);
+        Node *cd = find_class_decl(g, g->cur_class);
+        const char *parent = (cd && cd->as.class_decl.base_name) ? cd->as.class_decl.base_name : NULL;
+        if (!parent) cg_die("'super.<method>' in class with no base class", n->line);
+        fputs("sb_dispatch_from(this, ", g->out);
+        cg_emit_c_string(g->out, parent);
+        fputs(", ", g->out);
+        cg_emit_c_string(g->out, callee->as.member.name);
+        fprintf(g->out, ", %d", argc);
+        for (int i = 0; i < argc; i++) {
+            fputs(", ", g->out);
+            cg_expr(g, n->as.call.args.items[i]);
+        }
+        fputc(')', g->out);
+        return;
+    }
+
     /* Member call (builtin or namespace) */
     if (callee->kind == EX_MEMBER || callee->kind == EX_IDENT) {
         char *dotted = dotted_from_member(callee);
@@ -465,8 +635,21 @@ static void cg_call(Cg *g, Node *n) {
                 free(dotted);
                 return;
             }
-            /* user-defined function: must be EX_IDENT */
             if (callee->kind == EX_IDENT) {
+                /* Class instantiation: ClassName(args) or new ClassName(args) */
+                if (find_class_decl(g, dotted)) {
+                    fputs("sb_new(", g->out);
+                    cg_emit_c_string(g->out, dotted);
+                    fprintf(g->out, ", %d", argc);
+                    for (int i = 0; i < argc; i++) {
+                        fputs(", ", g->out);
+                        cg_expr(g, n->as.call.args.items[i]);
+                    }
+                    fputc(')', g->out);
+                    free(dotted);
+                    return;
+                }
+                /* user-defined function */
                 fprintf(g->out, "sb_fn_%s(", dotted);
                 for (int i = 0; i < argc; i++) {
                     if (i) fputs(", ", g->out);
@@ -476,10 +659,21 @@ static void cg_call(Cg *g, Node *n) {
                 free(dotted);
                 return;
             }
-            fprintf(stderr, "starbyte codegen: unknown function or namespace '%s' (line %d)\n",
-                    dotted, n->line);
+            /* EX_MEMBER chain that wasn't a builtin -- treat as method dispatch */
             free(dotted);
-            exit(1);
+        }
+        if (callee->kind == EX_MEMBER) {
+            fputs("sb_dispatch(", g->out);
+            cg_expr(g, callee->as.member.object);
+            fputs(", ", g->out);
+            cg_emit_c_string(g->out, callee->as.member.name);
+            fprintf(g->out, ", %d", argc);
+            for (int i = 0; i < argc; i++) {
+                fputs(", ", g->out);
+                cg_expr(g, n->as.call.args.items[i]);
+            }
+            fputc(')', g->out);
+            return;
         }
     }
     cg_die("unsupported call form", n->line);
@@ -742,8 +936,7 @@ static void cg_stmt(Cg *g, Node *n) {
             break;
         case ST_CLASS_DECL:
         case ST_INTERFACE_DECL:
-            cg_die("classes/interfaces are interpreter-only in this release; "
-                   "drop -o to run with the interpreter", n->line);
+            /* All emission happens at top level via codegen_emit_c. */
             break;
         default:          cg_die("unsupported statement", n->line);
     }
@@ -780,6 +973,130 @@ static void cg_emit_func_def(Cg *g, Node *fn) {
     fputs("}\n\n", g->out);
 }
 
+/* ---------- class / interface emission ---------- */
+
+/* Walk the inheritance chain (root first) collecting fields by name in
+   declaration order. Caller frees the returned arrays. */
+static void collect_class_fields(Cg *g, Node *cls, char ***names_out, size_t *count_out) {
+    /* build chain root..cls */
+    Node *chain[64]; int depth = 0;
+    for (Node *c = cls; c && depth < 64; ) {
+        chain[depth++] = c;
+        c = c->as.class_decl.base_name ? find_class_decl(g, c->as.class_decl.base_name) : NULL;
+    }
+    char **names = NULL; size_t n = 0, cap = 0;
+    for (int d = depth - 1; d >= 0; d--) {
+        Node *c = chain[d];
+        for (size_t i = 0; i < c->as.class_decl.field_count; i++) {
+            const char *fn = c->as.class_decl.fields[i].name;
+            if (n == cap) { cap = cap ? cap * 2 : 8; names = (char**)sb_xrealloc(names, cap * sizeof(char*)); }
+            names[n++] = sb_strdup(fn);
+        }
+    }
+    *names_out = names; *count_out = n;
+}
+
+static void cg_emit_method_signature(Cg *g, const char *cls, const char *method) {
+    fprintf(g->out, "static sb_value sb_method_%s_%s(sb_value this, int argc, sb_value *argv)",
+            cls, method);
+}
+static void cg_emit_ctor_signature(Cg *g, const char *cls) {
+    fprintf(g->out, "static sb_value sb_ctor_%s(sb_value this, int argc, sb_value *argv)", cls);
+}
+
+/* Emit body of a method/ctor: bind params from argv, then emit statements. */
+static void cg_emit_method_body(Cg *g, Node *fn) {
+    fputs(" {\n", g->out);
+    fputs("    (void)this; (void)argc; (void)argv;\n", g->out);
+    for (size_t i = 0; i < fn->as.func.param_count; i++) {
+        fprintf(g->out, "    sb_value %s = (argc > %zu) ? argv[%zu] : sb_null();\n",
+                fn->as.func.params[i].name, i, i);
+    }
+    g->indent = 1;
+    if (fn->as.func.body && fn->as.func.body->kind == ST_BLOCK) {
+        for (size_t i = 0; i < fn->as.func.body->as.block.stmts.count; i++)
+            cg_stmt(g, fn->as.func.body->as.block.stmts.items[i]);
+    }
+    cg_indent(g); fputs("return sb_null();\n", g->out);
+    g->indent = 0;
+    fputs("}\n\n", g->out);
+}
+
+static void cg_emit_class_alloc(Cg *g, Node *cls) {
+    char **fnames = NULL; size_t fcount = 0;
+    collect_class_fields(g, cls, &fnames, &fcount);
+    fprintf(g->out, "static sb_value sb_alloc_%s(void) {\n", cls->as.class_decl.name);
+    fputs("    return sb_struct_new(", g->out);
+    cg_emit_c_string(g->out, cls->as.class_decl.name);
+    fprintf(g->out, ", %d", (int)fcount);
+    for (size_t i = 0; i < fcount; i++) {
+        fputs(", ", g->out);
+        cg_emit_c_string(g->out, fnames[i]);
+        fputs(", sb_null()", g->out);
+    }
+    fputs(");\n}\n", g->out);
+    for (size_t i = 0; i < fcount; i++) free(fnames[i]);
+    free(fnames);
+}
+
+static void cg_emit_class_init(Cg *g, Node *cls) {
+    fprintf(g->out, "static void sb_init_%s(sb_value this) {\n", cls->as.class_decl.name);
+    fputs("    (void)this;\n", g->out);
+    if (cls->as.class_decl.base_name && find_class_decl(g, cls->as.class_decl.base_name)) {
+        fprintf(g->out, "    sb_init_%s(this);\n", cls->as.class_decl.base_name);
+    }
+    g->cur_class = cls->as.class_decl.name;
+    for (size_t i = 0; i < cls->as.class_decl.field_count; i++) {
+        ClassField *cf = &cls->as.class_decl.fields[i];
+        if (!cf->init) continue;
+        fputs("    sb_struct_set(this, ", g->out);
+        cg_emit_c_string(g->out, cf->name);
+        fputs(", ", g->out);
+        cg_expr(g, cf->init);
+        fputs(");\n", g->out);
+    }
+    g->cur_class = NULL;
+    fputs("}\n", g->out);
+    fprintf(g->out, "static sb_value sb_alloc_init_%s(void) {\n", cls->as.class_decl.name);
+    fprintf(g->out, "    sb_value o = sb_alloc_%s();\n", cls->as.class_decl.name);
+    fprintf(g->out, "    sb_init_%s(o);\n", cls->as.class_decl.name);
+    fputs("    return o;\n}\n\n", g->out);
+}
+
+static void cg_emit_class_methods(Cg *g, Node *cls) {
+    const char *cname = cls->as.class_decl.name;
+    int ci = cls->as.class_decl.ctor_index;
+    g->cur_class = cname;
+    for (size_t i = 0; i < cls->as.class_decl.method_count; i++) {
+        Node *m = cls->as.class_decl.methods[i];
+        if ((int)i == ci) {
+            cg_emit_ctor_signature(g, cname);
+        } else {
+            cg_emit_method_signature(g, cname, m->as.func.name);
+        }
+        cg_emit_method_body(g, m);
+    }
+    g->cur_class = NULL;
+}
+
+/* Emit static method table + class entry for one class. */
+static void cg_emit_class_tables(Cg *g, Node *cls) {
+    const char *cname = cls->as.class_decl.name;
+    int ci = cls->as.class_decl.ctor_index;
+    fprintf(g->out, "static const sb_method_entry sb_methods_%s[] = {\n", cname);
+    bool any = false;
+    for (size_t i = 0; i < cls->as.class_decl.method_count; i++) {
+        if ((int)i == ci) continue;
+        Node *m = cls->as.class_decl.methods[i];
+        fputs("    { ", g->out);
+        cg_emit_c_string(g->out, m->as.func.name);
+        fprintf(g->out, ", sb_method_%s_%s },\n", cname, m->as.func.name);
+        any = true;
+    }
+    if (!any) fputs("    { 0, 0 }\n", g->out);
+    fputs("};\n", g->out);
+}
+
 int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filename) {
     FILE *f = fopen(c_out_path, "w");
     if (!f) {
@@ -790,21 +1107,18 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     g.out = f;
     g.src = src_filename;
 
-    /* Collect struct and enum declarations (top-level only). */
+    /* Collect struct, enum, class, interface declarations (top-level only). */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
-        if (s->kind == ST_CLASS_DECL || s->kind == ST_INTERFACE_DECL) {
-            fprintf(stderr,
-                "starbyte: classes/interfaces are interpreter-only in this release.\n"
-                "          Run without -o (e.g. 'starbyte %s') to use the interpreter.\n",
-                src_filename ? src_filename : "<input>");
-            fclose(f);
-            free(g.structs);
-            return 1;
-        }
         if (s->kind == ST_STRUCT_DECL) {
             g.structs = (Node**)sb_xrealloc(g.structs, (g.struct_count + 1) * sizeof(Node*));
             g.structs[g.struct_count++] = s;
+        } else if (s->kind == ST_CLASS_DECL) {
+            g.classes = (Node**)sb_xrealloc(g.classes, (g.class_count + 1) * sizeof(Node*));
+            g.classes[g.class_count++] = s;
+        } else if (s->kind == ST_INTERFACE_DECL) {
+            g.ifaces = (Node**)sb_xrealloc(g.ifaces, (g.iface_count + 1) * sizeof(Node*));
+            g.ifaces[g.iface_count++] = s;
         } else if (s->kind == ST_ENUM_DECL) {
             long long next = 0;
             for (size_t k = 0; k < s->as.enum_decl.count; k++) {
@@ -816,6 +1130,33 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
                 g.enums[g.enum_count].member    = sb_strdup(m->name);
                 g.enums[g.enum_count].value     = val;
                 g.enum_count++;
+            }
+        }
+    }
+
+    /* Validate base classes and interface conformance (mirrors interpreter). */
+    for (size_t i = 0; i < g.class_count; i++) {
+        Node *c = g.classes[i];
+        if (c->as.class_decl.base_name && !find_class_decl(&g, c->as.class_decl.base_name)) {
+            fprintf(stderr, "starbyte codegen: unknown base class '%s' for class '%s' (line %d)\n",
+                    c->as.class_decl.base_name, c->as.class_decl.name, c->line);
+            fclose(f); free(g.structs); free(g.classes); free(g.ifaces); return 1;
+        }
+        for (size_t k = 0; k < c->as.class_decl.interface_count; k++) {
+            const char *in = c->as.class_decl.interface_names[k];
+            Node *id = find_iface_decl(&g, in);
+            if (!id) {
+                fprintf(stderr, "starbyte codegen: unknown interface '%s' for class '%s' (line %d)\n",
+                        in, c->as.class_decl.name, c->line);
+                fclose(f); free(g.structs); free(g.classes); free(g.ifaces); return 1;
+            }
+            for (size_t m = 0; m < id->as.iface_decl.method_count; m++) {
+                const char *mn = id->as.iface_decl.methods[m].name;
+                if (!find_method_in_chain(&g, c, mn)) {
+                    fprintf(stderr, "starbyte codegen: class '%s' does not implement method '%s' from interface '%s' (line %d)\n",
+                            c->as.class_decl.name, mn, in, c->line);
+                    fclose(f); free(g.structs); free(g.classes); free(g.ifaces); return 1;
+                }
             }
         }
     }
@@ -842,6 +1183,62 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
         if (s->kind == ST_FUNC_DECL) cg_emit_func_def(&g, s);
     }
 
+    /* ---- class emission ---- */
+    if (g.class_count > 0) {
+        /* forward declare alloc/init/method/ctor symbols */
+        for (size_t i = 0; i < g.class_count; i++) {
+            Node *c = g.classes[i];
+            const char *cn = c->as.class_decl.name;
+            fprintf(f, "static sb_value sb_alloc_%s(void);\n", cn);
+            fprintf(f, "static void sb_init_%s(sb_value);\n", cn);
+            fprintf(f, "static sb_value sb_alloc_init_%s(void);\n", cn);
+            int ci = c->as.class_decl.ctor_index;
+            for (size_t k = 0; k < c->as.class_decl.method_count; k++) {
+                Node *m = c->as.class_decl.methods[k];
+                if ((int)k == ci) {
+                    fprintf(f, "static sb_value sb_ctor_%s(sb_value, int, sb_value*);\n", cn);
+                } else {
+                    fprintf(f, "static sb_value sb_method_%s_%s(sb_value, int, sb_value*);\n",
+                            cn, m->as.func.name);
+                }
+            }
+        }
+        fputs("\n", f);
+        /* alloc + init bodies */
+        for (size_t i = 0; i < g.class_count; i++) {
+            cg_emit_class_alloc(&g, g.classes[i]);
+            cg_emit_class_init(&g, g.classes[i]);
+        }
+        /* method bodies */
+        for (size_t i = 0; i < g.class_count; i++) {
+            cg_emit_class_methods(&g, g.classes[i]);
+        }
+        /* method tables */
+        for (size_t i = 0; i < g.class_count; i++) {
+            cg_emit_class_tables(&g, g.classes[i]);
+        }
+        /* class table */
+        fputs("static const sb_class_entry sb_class_table_arr[] = {\n", f);
+        for (size_t i = 0; i < g.class_count; i++) {
+            Node *c = g.classes[i];
+            const char *cn = c->as.class_decl.name;
+            int ci = c->as.class_decl.ctor_index;
+            int nmeth = (int)c->as.class_decl.method_count - (ci >= 0 ? 1 : 0);
+            fputs("    { ", f);
+            cg_emit_c_string(f, cn);
+            fputs(", ", f);
+            if (c->as.class_decl.base_name)
+                cg_emit_c_string(f, c->as.class_decl.base_name);
+            else
+                fputs("NULL", f);
+            fprintf(f, ", %d, sb_methods_%s, ", nmeth, cn);
+            if (ci >= 0) fprintf(f, "sb_ctor_%s", cn);
+            else         fputs("NULL", f);
+            fprintf(f, ", sb_alloc_init_%s },\n", cn);
+        }
+        fputs("};\n\n", f);
+    }
+
     /* top-level statements (everything that's not a func or module) */
     fputs("static void sb_top_level(void) {\n", f);
     g.indent = 1;
@@ -856,6 +1253,10 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     /* C entry point */
     fputs("int main(int argc, char **argv) {\n", f);
     fputs("    (void)argc; (void)argv;\n", f);
+    if (g.class_count > 0) {
+        fputs("    sb_class_table = sb_class_table_arr;\n", f);
+        fputs("    sb_class_table_n = (int)(sizeof(sb_class_table_arr)/sizeof(sb_class_table_arr[0]));\n", f);
+    }
     fputs("    sb_top_level();\n", f);
     if (g.has_main) {
         fputs("    sb_value r = sb_fn_main();\n", f);
@@ -867,6 +1268,8 @@ int codegen_emit_c(Node *program, const char *c_out_path, const char *src_filena
     fclose(f);
 
     free(g.structs);
+    free(g.classes);
+    free(g.ifaces);
     for (size_t i = 0; i < g.enum_count; i++) {
         free(g.enums[i].enum_name);
         free(g.enums[i].member);
