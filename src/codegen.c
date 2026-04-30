@@ -1076,11 +1076,13 @@ static void cg_stmt(Cg *g, Node *n) {
             cg_indent(g); fputs("}\n", g->out);
             break;
         case ST_FOR: {
-            /* emulate as { init; while(cond) { body; post; } } */
+            /* Emulate as { init; for(; cond; post) { body } } so that a
+             * `continue` inside the body still triggers the post-update,
+             * matching the interpreter and C's `for` semantics. */
             cg_indent(g); fputs("{\n", g->out);
             g->indent++;
             if (n->as.for_stmt.init) cg_stmt(g, n->as.for_stmt.init);
-            cg_indent(g); fputs("while (", g->out);
+            cg_indent(g); fputs("for (; ", g->out);
             if (n->as.for_stmt.cond) {
                 fputs("sb_truthy(", g->out);
                 cg_expr(g, n->as.for_stmt.cond);
@@ -1088,15 +1090,15 @@ static void cg_stmt(Cg *g, Node *n) {
             } else {
                 fputc('1', g->out);
             }
+            fputs("; ", g->out);
+            if (n->as.for_stmt.post) {
+                fputs("(void)(", g->out);
+                cg_expr(g, n->as.for_stmt.post);
+                fputc(')', g->out);
+            }
             fputs(") {\n", g->out);
             g->indent++;
             cg_stmt(g, n->as.for_stmt.body);
-            if (n->as.for_stmt.post) {
-                cg_indent(g);
-                fputs("(void)(", g->out);
-                cg_expr(g, n->as.for_stmt.post);
-                fputs(");\n", g->out);
-            }
             g->indent--;
             cg_indent(g); fputs("}\n", g->out);
             g->indent--;

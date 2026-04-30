@@ -1,4 +1,4 @@
-# StarByte 0.8.0
+# StarByte 0.8.1
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -10,6 +10,21 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > **Alpha release** — core language, interpreter, native compiler backend,
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
+
+## What's new in 0.8.1
+
+- **Bugfix (native backend):** `continue` inside a `for` loop now correctly
+  runs the post-update step, matching both the interpreter and standard
+  C semantics. Previously, `continue` could cause an infinite loop in
+  natively compiled programs.
+- **Expanded `examples/demo.sb`** — the demo now exercises every
+  feature currently available in the language: variables and constants,
+  all primitive types, operators (including compound assignment),
+  control flow with `break` / `continue`, recursion, modules, the
+  `Console`, `Math`, `Strings` and `Memory` standard library, structs,
+  enums, classes/interfaces with inheritance, manual and GC-based
+  memory management, and `try` / `catch` / `finally` exceptions. Runs
+  identically through the interpreter and the native backend (`-o`).
 
 ## What's new in 0.8.0
 

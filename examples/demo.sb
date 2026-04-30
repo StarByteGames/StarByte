@@ -1,6 +1,68 @@
+// =============================================================
+//  StarByte – Feature-Demo
+//  Eine Tour durch alle aktuell verfügbaren Sprachfeatures.
+// =============================================================
+
 module System.Console;
 module Math;
+module Strings;
+module Memory;
 
+// -----------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------
+enum Color  { RED, GREEN, BLUE };
+enum Status { OK = 0, WARN = 10, ERR = 20 };
+
+// -----------------------------------------------------------------
+// Structs
+// -----------------------------------------------------------------
+struct Point {
+    int x;
+    int y;
+};
+
+// -----------------------------------------------------------------
+// Interfaces & Klassen (Vererbung, Override, super)
+// -----------------------------------------------------------------
+interface IGreeter {
+    string greet();
+}
+
+class Animal {
+    string name;
+    int    age = 0;
+
+    Animal(string n, int a) {
+        this.name = n;
+        this.age  = a;
+    }
+
+    string greet() {
+        return "Hi, ich bin " + this.name;
+    }
+
+    void describe() {
+        Console.WriteLine(this.greet(), "(Alter", this.age + ")");
+    }
+}
+
+class Dog : Animal, IGreeter {
+    string breed;
+
+    Dog(string n, int a, string b) {
+        super(n, a);
+        this.breed = b;
+    }
+
+    string greet() {
+        return super.greet() + " – ein " + this.breed;
+    }
+}
+
+// -----------------------------------------------------------------
+// Funktionen (mit Rekursion)
+// -----------------------------------------------------------------
 int add(int a, int b) {
     return a + b;
 }
@@ -10,30 +72,168 @@ int factorial(int n) {
     return n * factorial(n - 1);
 }
 
-void main() {
-    int result = add(2, 3);
-    Console.WriteLine("2 + 3 =", result);
+int abs(int x) {
+    if (x < 0) return -x;
+    return x;
+}
 
+// Funktion, die eine Exception werfen kann
+int safeDiv(int a, int b) {
+    if (b == 0) throw "Division durch Null";
+    return a / b;
+}
+
+// -----------------------------------------------------------------
+// main
+// -----------------------------------------------------------------
+int main() {
+    Console.WriteLine("===== StarByte Feature-Demo =====");
+
+    // -------- Variablen, Konstanten, primitive Typen --------
+    int    count   = 10;
+    float  ratio   = 0.75;
+    string name    = "Ada";
+    bool   active  = true;
+    char   initial = 'A';
+    const int MAX = 100;
+
+    Console.WriteLine("count =", count, "ratio =", ratio);
+    Console.WriteLine("name =", name, "active =", active, "initial =", initial);
+    Console.WriteLine("MAX (const) =", MAX);
+
+    // -------- Operatoren --------
+    int sum = add(2, 3);
+    Console.WriteLine("2 + 3 =", sum);
+    Console.WriteLine("10 % 3 =", 10 % 3);
+    Console.WriteLine("abs(-7) =", abs(-7));
+
+    bool ok = (1 + 1 == 2) && !(false);
+    Console.WriteLine("logisch ok =", ok);
+
+    // Compound assignment
+    int n = 5;
+    n += 10;
+    n *= 2;
+    Console.WriteLine("n nach += und *= :", n);
+
+    // -------- Strings --------
+    string greeting = "Hallo, " + "StarByte!";
+    Console.WriteLine(greeting);
+    Console.WriteLine("Länge =", Strings.length(greeting));
+    Console.WriteLine("concat =", Strings.concat("Wert: ", 42, " / ", true));
+
+    // -------- Kontrollstrukturen --------
     for (int i = 0; i < 5; i++) {
-        Console.WriteLine("i =", i);
+        if (i == 2) continue;
+        if (i == 4) break;
+        Console.WriteLine("for i =", i);
     }
 
-    int x = 10;
+    int x = 3;
     while (x > 0) {
+        Console.WriteLine("while x =", x);
         x--;
     }
-    Console.WriteLine("x after loop:", x);
 
+    // if / else if / else
+    int v = -1;
+    if (v > 0) {
+        Console.WriteLine("positiv");
+    } else if (v < 0) {
+        Console.WriteLine("negativ");
+    } else {
+        Console.WriteLine("null");
+    }
+
+    // -------- Rekursion --------
     const int five = 5;
     Console.WriteLine("5! =", factorial(five));
 
+    // -------- Math --------
     float pi = 3.14159;
     Console.WriteLine("sqrt(2) =", Math.sqrt(2));
+    Console.WriteLine("pow(2, 10) =", Math.pow(2, 10));
     Console.WriteLine("pi =", pi);
 
-    string greeting = "Hello, " + "StarByte!";
-    Console.WriteLine(greeting);
+    // -------- Enums (qualifiziert + unqualifiziert) --------
+    int c = Color.GREEN;
+    Console.WriteLine("Color.GREEN =", c, " RED =", RED, " BLUE =", BLUE);
+    Console.WriteLine("Status.WARN =", Status.WARN);
 
-    bool ok = (1 + 1 == 2) && !(false);
-    Console.WriteLine("ok =", ok);
+    // -------- Structs --------
+    Point p = {3, 4};
+    Console.WriteLine("Punkt p =", p);
+    p.x += 10;
+    p.y *= 2;
+    Console.WriteLine("p nach Update =", p);
+
+    Point q;
+    q.x = 100;
+    q.y = 200;
+    Console.WriteLine("Default-Punkt q =", q);
+
+    // -------- Klassen / Interfaces / Vererbung --------
+    Animal a = new Animal("Pip", 4);
+    a.describe();
+
+    Dog d = Dog("Rex", 7, "Labrador");   // 'new' ist optional
+    d.describe();
+    Console.WriteLine("dog.greet() ->", d.greet());
+
+    // -------- Speicherverwaltung: manuell --------
+    int xs = alloc(5);
+    for (int i = 0; i < len(xs); i++) {
+        xs[i] = i * i;
+    }
+    Console.WriteLine("xs[0..4] =", xs[0], xs[1], xs[2], xs[3], xs[4]);
+    Console.WriteLine("len(xs) =", len(xs));
+    free(xs);
+
+    // -------- Speicherverwaltung: Garbage Collector --------
+    int ys = gc_alloc(3);
+    ys[0] = "hello";
+    ys[1] = 42;
+    ys[2] = true;
+    Console.WriteLine("gc-buffer ys =", ys[0], ys[1], ys[2]);
+    ys = null;
+    int freed = gc_collect();
+    Console.WriteLine("gc_collect freigegeben:", freed);
+
+    // Memory-Namespace-Variante
+    int zs = Memory.alloc(2);
+    zs[0] = 111; zs[1] = 222;
+    Console.WriteLine("Memory.length(zs) =", Memory.length(zs));
+    Memory.free(zs);
+
+    // -------- Exceptions --------
+    try {
+        Console.WriteLine("safeDiv(10, 2) =", safeDiv(10, 2));
+        Console.WriteLine("safeDiv(10, 0) =", safeDiv(10, 0));   // wirft
+        Console.WriteLine("nie erreicht");
+    } catch (string e) {
+        Console.WriteLine("gefangen:", e);
+    } finally {
+        Console.WriteLine("(finally läuft immer)");
+    }
+
+    // Beliebige Werte werfen
+    try {
+        throw 404;
+    } catch (int code) {
+        Console.WriteLine("Code gefangen:", code);
+    }
+
+    // try ohne catch, nur finally – propagiert nach außen
+    try {
+        try {
+            throw "boom";
+        } finally {
+            Console.WriteLine("inneres finally");
+        }
+    } catch (string e) {
+        Console.WriteLine("äußeres catch:", e);
+    }
+
+    Console.WriteLine("===== Demo fertig =====");
+    return 0;
 }

@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.8.0. This document focuses on how to write StarByte programs.
+v0.8.1. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -859,7 +859,7 @@ starbyte example.sb
 
 ## 21. What's Not Yet Supported
 
-These are planned but not in v0.8.0:
+These are planned but not in v0.8.1:
 
 - Arrays with built-in iteration syntax (use buffers + `for`)
 - Catch-by-type filtering (every catch is a catch-all today)
