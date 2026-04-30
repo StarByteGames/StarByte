@@ -16,6 +16,7 @@ static const char *RUNTIME_C =
 "#include <stdarg.h>\n"
 "#include <math.h>\n"
 "#include <stddef.h>\n"
+"#include <setjmp.h>\n"
 "\n"
 "typedef enum { SB_NULL, SB_INT, SB_FLOAT, SB_BOOL, SB_CHAR, SB_STRING, SB_STRUCT, SB_BUFFER } sb_type;\n"
 "\n"
@@ -537,6 +538,23 @@ static const char *RUNTIME_C =
 "    return obj;\n"
 "}\n"
 "\n"
+"/* ----- exceptions ----- */\n"
+"typedef struct sb_exc_frame { jmp_buf env; struct sb_exc_frame *prev; } sb_exc_frame;\n"
+"static sb_exc_frame *sb_exc_stack = NULL;\n"
+"static sb_value sb_exc_value;\n"
+"static int sb_exc_inited = 0;\n"
+"static void sb_throw(sb_value v) {\n"
+"    if (!sb_exc_stack) {\n"
+"        char *s = sb_to_cstr(v);\n"
+"        fprintf(stderr, \"uncaught exception: %s\\n\", s);\n"
+"        free(s);\n"
+"        exit(1);\n"
+"    }\n"
+"    sb_exc_value = v;\n"
+"    sb_exc_inited = 1;\n"
+"    longjmp(sb_exc_stack->env, 1);\n"
+"}\n"
+"\n"
 "/* --- end runtime --- */\n";
 
 /* ============================================================
@@ -560,6 +578,8 @@ typedef struct {
     size_t      iface_count;
     /* current class name while emitting a method body (for super), or NULL */
     const char *cur_class;
+    /* counter for unique try-frame variable names */
+    int try_seq;
     /* flat enum-member table for dotted/unqualified resolution */
     struct {
         char       *enum_name;  /* "Color" */
@@ -1104,6 +1124,45 @@ static void cg_stmt(Cg *g, Node *n) {
         case ST_INTERFACE_DECL:
             /* All emission happens at top level via codegen_emit_c. */
             break;
+        case ST_THROW:
+            cg_indent(g);
+            fputs("sb_throw(", g->out);
+            cg_expr(g, n->as.throw_stmt.value);
+            fputs(");\n", g->out);
+            break;
+        case ST_TRY: {
+            int seq = g->try_seq++;
+            cg_indent(g); fprintf(g->out, "{ sb_exc_frame __sb_f%d; __sb_f%d.prev = sb_exc_stack; sb_exc_stack = &__sb_f%d;\n", seq, seq, seq);
+            cg_indent(g); fprintf(g->out, "  if (setjmp(__sb_f%d.env) == 0) {\n", seq);
+            g->indent++;
+            cg_stmt(g, n->as.try_stmt.body);
+            cg_indent(g); fprintf(g->out, "sb_exc_stack = __sb_f%d.prev;\n", seq);
+            if (n->as.try_stmt.finally_body) cg_stmt(g, n->as.try_stmt.finally_body);
+            g->indent--;
+            cg_indent(g); fputs("  } else {\n", g->out);
+            g->indent++;
+            cg_indent(g); fprintf(g->out, "sb_exc_stack = __sb_f%d.prev;\n", seq);
+            if (n->as.try_stmt.catch_body) {
+                cg_indent(g); fputs("{\n", g->out);
+                g->indent++;
+                if (n->as.try_stmt.catch_name) {
+                    cg_indent(g);
+                    fprintf(g->out, "sb_value %s = sb_exc_value;\n", n->as.try_stmt.catch_name);
+                }
+                cg_stmt(g, n->as.try_stmt.catch_body);
+                if (n->as.try_stmt.finally_body) cg_stmt(g, n->as.try_stmt.finally_body);
+                g->indent--;
+                cg_indent(g); fputs("}\n", g->out);
+            } else {
+                /* No catch: run finally then re-throw. */
+                if (n->as.try_stmt.finally_body) cg_stmt(g, n->as.try_stmt.finally_body);
+                cg_indent(g); fputs("sb_throw(sb_exc_value);\n", g->out);
+            }
+            g->indent--;
+            cg_indent(g); fputs("  }\n", g->out);
+            cg_indent(g); fputs("}\n", g->out);
+            break;
+        }
         default:          cg_die("unsupported statement", n->line);
     }
 }

@@ -1,4 +1,4 @@
-# StarByte 0.7.0
+# StarByte 0.8.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -10,6 +10,34 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > **Alpha release** — core language, interpreter, native compiler backend,
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
+
+## What's new in 0.8.0
+
+- **Exceptions** — `try` / `catch` / `finally` and `throw` are now
+  available in both the interpreter and the native backend (`-o`):
+
+  ```cs
+  int safeDiv(int a, int b) {
+      if (b == 0) throw "division by zero";
+      return a / b;
+  }
+
+  try {
+      Console.WriteLine(safeDiv(10, 0));
+  } catch (string e) {
+      Console.WriteLine("caught:", e);
+  } finally {
+      Console.WriteLine("cleanup runs either way");
+  }
+  ```
+
+  Any value can be thrown (string, int, struct, object, ...). The
+  catch clause accepts an optional type annotation that is currently
+  ignored at runtime — every catch is a catch-all. A `try` block may
+  omit `catch` and use only `finally`, in which case in-flight
+  exceptions propagate to the next handler. Uncaught exceptions abort
+  the program with `<file>:<line>: uncaught exception: <value>`.
+  See [examples/exceptions.sb](examples/exceptions.sb).
 
 ## What's new in 0.7.0
 
@@ -257,6 +285,7 @@ int main() {
 | Comments      | `//` and `/* ... */`                                     |
 | OOP           | `class`, `interface`, single inheritance, `this`, `super`, `new` (interpreter + native) |
 | Memory        | `alloc` / `free`, `gc_alloc` / `gc_collect`, `len`, `buf[i]` |
+| Exceptions    | `try` / `catch` / `finally`, `throw <expr>;` (interpreter + native) |
 
 ### Standard library
 
@@ -308,7 +337,7 @@ Everything lives in the project directory:
 - [x] Classes, inheritance, interfaces (interpreter)
 - [x] Classes/interfaces in native backend (`-o`)
 - [x] Manual memory and garbage collector
-- [ ] Exceptions (`try` / `catch` / `throw`)
+- [x] Exceptions (`try` / `catch` / `throw`)
 - [ ] Generics, lambdas, coroutines
 - [ ] Expanded stdlib (`File`, `Network`, `Collections`)
 

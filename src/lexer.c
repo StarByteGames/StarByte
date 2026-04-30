@@ -46,6 +46,7 @@ static const KW KEYWORDS[] = {
     {"string", TK_KW_STRING}, {"struct", TK_KW_STRUCT}, {"enum", TK_KW_ENUM},
     {"switch", TK_KW_SWITCH}, {"case", TK_KW_CASE}, {"default", TK_KW_DEFAULT},
     {"class", TK_KW_CLASS}, {"interface", TK_KW_INTERFACE}, {"new", TK_KW_NEW},
+    {"try", TK_KW_TRY}, {"catch", TK_KW_CATCH}, {"finally", TK_KW_FINALLY}, {"throw", TK_KW_THROW},
     {NULL, TK_EOF}
 };
 

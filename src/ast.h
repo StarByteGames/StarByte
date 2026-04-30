@@ -32,7 +32,9 @@ typedef enum {
     ST_STRUCT_DECL,    /* struct Name { type field; ... }; */
     ST_ENUM_DECL,      /* enum Name { A, B = 3, C }; */
     ST_CLASS_DECL,     /* class Name [: Base[, IFoo, ...]] { fields/methods } */
-    ST_INTERFACE_DECL  /* interface Name { method signatures; } */
+    ST_INTERFACE_DECL, /* interface Name { method signatures; } */
+    ST_TRY,            /* try {..} catch ([T] name) {..} [finally {..}] */
+    ST_THROW           /* throw expr; */
 } NodeKind;
 
 typedef enum {
@@ -168,6 +170,15 @@ struct Node {
             InterfaceMethod *methods;
             size_t           method_count;
         } iface_decl;
+
+        struct {
+            Node *body;          /* ST_BLOCK */
+            char *catch_name;    /* may be NULL if no catch */
+            Node *catch_body;    /* ST_BLOCK, may be NULL */
+            Node *finally_body;  /* ST_BLOCK, may be NULL */
+        } try_stmt;
+
+        struct { Node *value; } throw_stmt;
     } as;
 };
 

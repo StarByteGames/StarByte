@@ -1116,6 +1116,93 @@ static void exec(Interp *I, Env *env, Node *n) {
             env_define(env, n->as.iface_decl.name, v_interface(n), true);
             break;
         }
+        case ST_THROW: {
+            Value v = eval(I, env, n->as.throw_stmt.value);
+            if (!I->exc_stack) {
+                char *s = value_to_cstring(&v);
+                fprintf(stderr, "%s:%d: uncaught exception: %s\n",
+                        I->filename ? I->filename : "<input>", n->line, s);
+                free(s);
+                value_free(&v);
+                exit(1);
+            }
+            value_free(&I->exc_value);
+            I->exc_value = v;
+            I->exc_line  = n->line;
+            longjmp(I->exc_stack->env, 1);
+        }
+        case ST_TRY: {
+            ExcFrame frame;
+            frame.prev = I->exc_stack;
+            I->exc_stack = &frame;
+            volatile int caught = 0;
+            if (setjmp(frame.env) == 0) {
+                exec(I, env, n->as.try_stmt.body);
+            } else {
+                caught = 1;
+            }
+            I->exc_stack = frame.prev;
+            if (caught && n->as.try_stmt.catch_body) {
+                /* Reset abort flags before running the catch handler so that
+                   the handler can run normally. */
+                I->return_flag = 0;
+                I->break_flag = 0;
+                I->continue_flag = 0;
+                value_free(&I->return_value);
+                I->return_value = v_null();
+                Env *cenv = env_new(env);
+                if (n->as.try_stmt.catch_name) {
+                    env_define(cenv, n->as.try_stmt.catch_name, I->exc_value, false);
+                    I->exc_value = v_null();
+                } else {
+                    value_free(&I->exc_value);
+                    I->exc_value = v_null();
+                }
+                exec(I, cenv, n->as.try_stmt.catch_body);
+                env_free(cenv);
+                caught = 0;
+            }
+            if (n->as.try_stmt.finally_body) {
+                /* Run finally even if an exception is in flight. We need
+                   to temporarily clear control-flow flags, then restore
+                   them so the original disposition wins (unless finally
+                   itself throws/returns/breaks). */
+                int  saved_ret = I->return_flag;
+                int  saved_brk = I->break_flag;
+                int  saved_cnt = I->continue_flag;
+                Value saved_retv = I->return_value;
+                I->return_flag = 0;
+                I->break_flag = 0;
+                I->continue_flag = 0;
+                I->return_value = v_null();
+                exec(I, env, n->as.try_stmt.finally_body);
+                if (!I->return_flag && !I->break_flag && !I->continue_flag) {
+                    /* finally completed normally -- restore prior state */
+                    I->return_flag = saved_ret;
+                    I->break_flag = saved_brk;
+                    I->continue_flag = saved_cnt;
+                    value_free(&I->return_value);
+                    I->return_value = saved_retv;
+                } else {
+                    value_free(&saved_retv);
+                }
+            }
+            if (caught) {
+                /* Uncaught (no catch handler) -- re-throw. */
+                if (!I->exc_stack) {
+                    Value v = I->exc_value;
+                    I->exc_value = v_null();
+                    char *s = value_to_cstring(&v);
+                    fprintf(stderr, "%s:%d: uncaught exception: %s\n",
+                            I->filename ? I->filename : "<input>", I->exc_line, s);
+                    free(s);
+                    value_free(&v);
+                    exit(1);
+                }
+                longjmp(I->exc_stack->env, 1);
+            }
+            break;
+        }
         default: {
             /* expression at top level (shouldn't happen via parser) */
             Value v = eval(I, env, n);
@@ -1189,6 +1276,7 @@ void interp_init(Interp *I, const char *filename) {
 
 void interp_dispose(Interp *I) {
     value_free(&I->return_value);
+    value_free(&I->exc_value);
     env_free(I->globals);
     I->globals = NULL;
     /* Reclaim any remaining GC-managed buffers. After env_free their last
@@ -1205,6 +1293,23 @@ void interp_dispose(Interp *I) {
 }
 
 int interp_run(Interp *I, Node *program) {
+    /* Set up a top-level exception sink so uncaught throws from any
+       statement (including main) are reported with a clear message
+       instead of crashing the host. */
+    ExcFrame top;
+    top.prev = I->exc_stack;
+    I->exc_stack = &top;
+    if (setjmp(top.env) != 0) {
+        I->exc_stack = top.prev;
+        Value v = I->exc_value;
+        I->exc_value = v_null();
+        char *s = value_to_cstring(&v);
+        fprintf(stderr, "%s:%d: uncaught exception: %s\n",
+                I->filename ? I->filename : "<input>", I->exc_line, s);
+        free(s);
+        value_free(&v);
+        return 1;
+    }
     /* First pass: hoist function, struct and enum declarations into globals */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
@@ -1237,5 +1342,6 @@ int interp_run(Interp *I, Node *program) {
         value_free(&r);
     }
     value_free(&mainfn);
+    I->exc_stack = top.prev;
     return exit_code;
 }

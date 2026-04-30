@@ -130,6 +130,15 @@ void node_free(Node *n) {
             }
             free(n->as.iface_decl.methods);
             break;
+        case ST_TRY:
+            node_free(n->as.try_stmt.body);
+            free(n->as.try_stmt.catch_name);
+            node_free(n->as.try_stmt.catch_body);
+            node_free(n->as.try_stmt.finally_body);
+            break;
+        case ST_THROW:
+            node_free(n->as.throw_stmt.value);
+            break;
         default: break;
     }
     free(n);

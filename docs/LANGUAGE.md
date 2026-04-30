@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.7.0. This document focuses on how to write StarByte programs.
+v0.8.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -24,10 +24,11 @@ For build and install instructions see [README.md](../README.md).
 14. [Standard Library](#14-standard-library)
 15. [Program Entry Point](#15-program-entry-point)
 16. [Exit Codes & Error Handling](#16-exit-codes--error-handling)
-17. [Style Guide](#17-style-guide)
-18. [Common Pitfalls](#18-common-pitfalls)
-19. [Full Example](#19-full-example)
-20. [What's Not Yet Supported](#20-whats-not-yet-supported)
+17. [Exceptions](#17-exceptions)
+18. [Style Guide](#18-style-guide)
+19. [Common Pitfalls](#19-common-pitfalls)
+20. [Full Example](#20-full-example)
+21. [What's Not Yet Supported](#21-whats-not-yet-supported)
 
 ---
 
@@ -709,11 +710,70 @@ Runtime errors (e.g. divide by zero, undefined variable, wrong arity)
 abort the program with a `<file>:<line>: runtime error: ...` message
 and a non-zero exit code.
 
-> Exceptions (`try` / `catch` / `throw`) are on the roadmap.
+> User-level recoverable errors are handled with `throw` /
+> `try` / `catch`. See [§17. Exceptions](#17-exceptions).
 
 ---
 
-## 17. Style Guide
+## 17. Exceptions
+
+StarByte supports `throw`, `try`, `catch`, and `finally`. Any value
+can be thrown — strings, ints, structs, class instances, etc.
+
+```cs
+int safeDiv(int a, int b) {
+    if (b == 0) throw "division by zero";
+    return a / b;
+}
+
+try {
+    int r = safeDiv(10, 0);
+    Console.WriteLine(r);
+} catch (string e) {
+    Console.WriteLine("caught:", e);
+} finally {
+    Console.WriteLine("always runs");
+}
+```
+
+### Syntax
+
+```
+try { ... }
+catch ([Type] name) { ... }
+[finally { ... }]
+```
+
+- The catch clause's type annotation is **optional** and currently
+  ignored at runtime — every catch handles every thrown value.
+- The catch variable name is required if a catch clause is present.
+- `finally` is optional. It runs whether the try body completed
+  normally, threw, or was caught. If `finally` itself throws or
+  returns, that supersedes the try/catch outcome.
+- A try block may omit `catch` and provide only `finally`, in which
+  case in-flight exceptions still propagate after `finally` runs.
+
+### Throwing
+
+```cs
+throw "something went wrong";   // string
+throw 404;                       // int
+throw MyError("bad input");      // class instance
+```
+
+### Uncaught exceptions
+
+If no enclosing `try` catches a thrown value, the program aborts with:
+
+```
+<file>:<line>: uncaught exception: <stringified value>
+```
+
+and a non-zero exit code.
+
+---
+
+## 18. Style Guide
 
 - Indentation: 4 spaces, no tabs.
 - Braces: opening brace on the same line.
@@ -737,7 +797,7 @@ int doWork(int n) {
 
 ---
 
-## 18. Common Pitfalls
+## 19. Common Pitfalls
 
 | Mistake                                  | Fix                                              |
 |------------------------------------------|--------------------------------------------------|
@@ -749,7 +809,7 @@ int doWork(int n) {
 
 ---
 
-## 19. Full Example
+## 20. Full Example
 
 ```cs
 module System.Console;
@@ -797,12 +857,12 @@ starbyte example.sb
 
 ---
 
-## 20. What's Not Yet Supported
+## 21. What's Not Yet Supported
 
-These are planned but not in v0.7.0:
+These are planned but not in v0.8.0:
 
 - Arrays with built-in iteration syntax (use buffers + `for`)
-- Exceptions (`try` / `catch` / `throw`)
+- Catch-by-type filtering (every catch is a catch-all today)
 - Generics, lambdas, coroutines
 - Multi-file projects with user-defined modules
 - `File`, `Network` standard libraries

@@ -1,0 +1,42 @@
+module System.Console;
+
+int safeDiv(int a, int b) {
+    if (b == 0) throw "division by zero";
+    return a / b;
+}
+
+int main() {
+    Console.WriteLine("== try/catch demo ==");
+
+    try {
+        int r = safeDiv(10, 2);
+        Console.WriteLine("10 / 2 =", r);
+        r = safeDiv(10, 0);
+        Console.WriteLine("never reached:", r);
+    } catch (string e) {
+        Console.WriteLine("caught:", e);
+    } finally {
+        Console.WriteLine("(finally always runs)");
+    }
+
+    // Throwing any value works -- here a struct-ish int code.
+    try {
+        throw 42;
+    } catch (int code) {
+        Console.WriteLine("caught code:", code);
+    }
+
+    // Re-throw via a try without a catch (only finally).
+    try {
+        try {
+            throw "boom";
+        } finally {
+            Console.WriteLine("inner finally");
+        }
+    } catch (string e) {
+        Console.WriteLine("outer caught:", e);
+    }
+
+    Console.WriteLine("done");
+    return 0;
+}

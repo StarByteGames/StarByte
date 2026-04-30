@@ -758,6 +758,70 @@ static Node *parse_interface_decl(Parser *p) {
     return n;
 }
 
+static Node *parse_try(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* try */
+    Node *body = parse_block(p);
+
+    char *catch_name = NULL;
+    Node *catch_body = NULL;
+    Node *finally_body = NULL;
+
+    if (match(p, TK_KW_CATCH)) {
+        expect(p, TK_LPAREN, "'('");
+        /* Accept either `catch (Type name)` or `catch (name)`. The type is
+           parsed but not used for matching today (single catch-all). */
+        if (p->cur.type == TK_IDENT) {
+            Token *pk = peek_tok(p);
+            if (pk->type == TK_IDENT) {
+                /* Type name pattern -- discard the type. */
+                TypeRef ty = parse_type(p);
+                free(ty.type_name);
+                catch_name = p->cur.svalue; p->cur.svalue = NULL;
+                advance(p);
+            } else {
+                catch_name = p->cur.svalue; p->cur.svalue = NULL;
+                advance(p);
+            }
+        } else if (is_type_keyword(p->cur.type) || p->cur.type == TK_KW_CONST) {
+            TypeRef ty = parse_type(p);
+            free(ty.type_name);
+            if (p->cur.type != TK_IDENT) p_error(p, "expected catch variable name");
+            catch_name = p->cur.svalue; p->cur.svalue = NULL;
+            advance(p);
+        } else {
+            p_error(p, "expected catch variable");
+        }
+        expect(p, TK_RPAREN, "')'");
+        catch_body = parse_block(p);
+    }
+
+    if (match(p, TK_KW_FINALLY)) {
+        finally_body = parse_block(p);
+    }
+
+    if (!catch_body && !finally_body) {
+        p_error(p, "try block requires a catch or finally");
+    }
+
+    Node *n = node_new(ST_TRY, line);
+    n->as.try_stmt.body = body;
+    n->as.try_stmt.catch_name = catch_name;
+    n->as.try_stmt.catch_body = catch_body;
+    n->as.try_stmt.finally_body = finally_body;
+    return n;
+}
+
+static Node *parse_throw(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* throw */
+    Node *v = parse_expr(p);
+    expect(p, TK_SEMI, "';'");
+    Node *n = node_new(ST_THROW, line);
+    n->as.throw_stmt.value = v;
+    return n;
+}
+
 static Node *parse_stmt(Parser *p) {
     int line = p->cur.line;
     switch (p->cur.type) {
@@ -773,6 +837,8 @@ static Node *parse_stmt(Parser *p) {
         case TK_KW_ENUM:   return parse_enum_decl(p);
         case TK_KW_CLASS:  return parse_class_decl(p);
         case TK_KW_INTERFACE: return parse_interface_decl(p);
+        case TK_KW_TRY:    return parse_try(p);
+        case TK_KW_THROW:  return parse_throw(p);
         case TK_SEMI: advance(p); { Node *e = node_new(ST_EXPR, line); e->as.expr_stmt.expr = NULL; return e; }
         default: break;
     }

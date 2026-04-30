@@ -3,6 +3,7 @@
 
 #include "ast.h"
 #include "value.h"
+#include <setjmp.h>
 
 typedef struct EnvEntry {
     char *name;
@@ -16,6 +17,11 @@ typedef struct Env {
     EnvEntry *head;
 } Env;
 
+typedef struct ExcFrame {
+    jmp_buf env;
+    struct ExcFrame *prev;
+} ExcFrame;
+
 typedef struct Interp {
     Env *globals;
     const char *filename;
@@ -25,6 +31,11 @@ typedef struct Interp {
     int break_flag;
     int continue_flag;
     Value return_value;
+
+    /* exception state */
+    ExcFrame *exc_stack;
+    Value     exc_value;
+    int       exc_line;
 
     /* Garbage-collected buffer list (intrusive). */
     struct Buffer *gc_head;

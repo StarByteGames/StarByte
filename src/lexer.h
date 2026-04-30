@@ -41,6 +41,10 @@ typedef enum {
     TK_KW_CLASS,
     TK_KW_INTERFACE,
     TK_KW_NEW,
+    TK_KW_TRY,
+    TK_KW_CATCH,
+    TK_KW_FINALLY,
+    TK_KW_THROW,
 
     /* punctuation */
     TK_LPAREN,    /* ( */
