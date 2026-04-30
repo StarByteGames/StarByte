@@ -331,7 +331,24 @@ static Node *parse_var_decl(Parser *p, TypeRef ty) {
     char *name = p->cur.svalue; p->cur.svalue = NULL;
     advance(p);
     Node *init = NULL;
-    if (match(p, TK_ASSIGN)) init = parse_expr(p);
+    if (match(p, TK_ASSIGN)) {
+        if (check(p, TK_LBRACE)) {
+            int blit = p->cur.line;
+            advance(p); /* { */
+            Node *lit = node_new(EX_STRUCT_LIT, blit);
+            if (!check(p, TK_RBRACE)) {
+                for (;;) {
+                    Node *e = parse_expr(p);
+                    nodelist_push(&lit->as.struct_lit.values, e);
+                    if (!match(p, TK_COMMA)) break;
+                }
+            }
+            expect(p, TK_RBRACE, "'}'");
+            init = lit;
+        } else {
+            init = parse_expr(p);
+        }
+    }
     expect(p, TK_SEMI, "';'");
     Node *n = node_new(ST_VAR_DECL, line);
     n->as.var_decl.type = ty;
@@ -484,6 +501,77 @@ static Node *parse_module(Parser *p) {
     return n;
 }
 
+static Node *parse_struct_decl(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* struct */
+    if (p->cur.type != TK_IDENT) p_error(p, "expected struct name");
+    char *name = p->cur.svalue; p->cur.svalue = NULL;
+    advance(p);
+    expect(p, TK_LBRACE, "'{'");
+    StructField *fields = NULL;
+    size_t fc = 0, fcap = 0;
+    while (!check(p, TK_RBRACE) && !check(p, TK_EOF)) {
+        TypeRef ft = parse_type(p);
+        if (p->cur.type != TK_IDENT) p_error(p, "expected field name");
+        char *fn = p->cur.svalue; p->cur.svalue = NULL;
+        advance(p);
+        expect(p, TK_SEMI, "';'");
+        if (fc == fcap) { fcap = fcap ? fcap * 2 : 4; fields = (StructField*)sb_xrealloc(fields, fcap * sizeof(StructField)); }
+        fields[fc].type = ft; fields[fc].name = fn; fc++;
+    }
+    expect(p, TK_RBRACE, "'}'");
+    /* trailing ';' optional (C-style) */
+    match(p, TK_SEMI);
+    Node *n = node_new(ST_STRUCT_DECL, line);
+    n->as.struct_decl.name = name;
+    n->as.struct_decl.fields = fields;
+    n->as.struct_decl.field_count = fc;
+    return n;
+}
+
+static Node *parse_enum_decl(Parser *p) {
+    int line = p->cur.line;
+    advance(p); /* enum */
+    if (p->cur.type != TK_IDENT) p_error(p, "expected enum name");
+    char *name = p->cur.svalue; p->cur.svalue = NULL;
+    advance(p);
+    expect(p, TK_LBRACE, "'{'");
+    EnumMember *members = NULL;
+    size_t mc = 0, mcap = 0;
+    if (!check(p, TK_RBRACE)) {
+        for (;;) {
+            if (p->cur.type != TK_IDENT) p_error(p, "expected enum member name");
+            char *mn = p->cur.svalue; p->cur.svalue = NULL;
+            advance(p);
+            long long mv = 0;
+            bool has_v = false;
+            if (match(p, TK_ASSIGN)) {
+                bool neg = false;
+                if (match(p, TK_MINUS)) neg = true;
+                else match(p, TK_PLUS);
+                if (p->cur.type != TK_INT) p_error(p, "expected integer literal in enum value");
+                mv = neg ? -p->cur.ivalue : p->cur.ivalue;
+                has_v = true;
+                advance(p);
+            }
+            if (mc == mcap) { mcap = mcap ? mcap * 2 : 4; members = (EnumMember*)sb_xrealloc(members, mcap * sizeof(EnumMember)); }
+            members[mc].name = mn;
+            members[mc].value = mv;
+            members[mc].has_value = has_v;
+            mc++;
+            if (!match(p, TK_COMMA)) break;
+            if (check(p, TK_RBRACE)) break;
+        }
+    }
+    expect(p, TK_RBRACE, "'}'");
+    match(p, TK_SEMI);
+    Node *n = node_new(ST_ENUM_DECL, line);
+    n->as.enum_decl.name = name;
+    n->as.enum_decl.members = members;
+    n->as.enum_decl.count = mc;
+    return n;
+}
+
 static Node *parse_stmt(Parser *p) {
     int line = p->cur.line;
     switch (p->cur.type) {
@@ -495,6 +583,8 @@ static Node *parse_stmt(Parser *p) {
         case TK_KW_RETURN: return parse_return(p);
         case TK_KW_BREAK: advance(p); expect(p, TK_SEMI, "';'"); return node_new(ST_BREAK, line);
         case TK_KW_CONTINUE: advance(p); expect(p, TK_SEMI, "';'"); return node_new(ST_CONTINUE, line);
+        case TK_KW_STRUCT: return parse_struct_decl(p);
+        case TK_KW_ENUM:   return parse_enum_decl(p);
         case TK_SEMI: advance(p); { Node *e = node_new(ST_EXPR, line); e->as.expr_stmt.expr = NULL; return e; }
         default: break;
     }
@@ -510,6 +600,17 @@ static Node *parse_stmt(Parser *p) {
             return parse_func_decl(p, ty);
         }
         return parse_var_decl(p, ty);
+    }
+
+    /* user-typed declaration: IDENT IDENT (= ... ;) or IDENT IDENT ( ... ) */
+    if (p->cur.type == TK_IDENT) {
+        Token *pk = peek_tok(p);
+        if (pk->type == TK_IDENT) {
+            TypeRef ty = parse_type(p);
+            Token *pk2 = peek_tok(p);
+            if (pk2->type == TK_LPAREN) return parse_func_decl(p, ty);
+            return parse_var_decl(p, ty);
+        }
     }
 
     Node *e = parse_expr(p);

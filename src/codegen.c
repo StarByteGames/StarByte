@@ -456,6 +456,9 @@ static void cg_expr(Cg *g, Node *n) {
         }
         case EX_CALL:   cg_call(g, n); break;
         case EX_MEMBER: cg_die("bare member access not supported in native backend", n->line); break;
+        case EX_STRUCT_LIT:
+            cg_die("struct/brace initializers are not supported by the native backend yet (use --run)", n->line);
+            break;
         default:        cg_die("unsupported expression", n->line);
     }
 }
@@ -551,6 +554,10 @@ static void cg_stmt(Cg *g, Node *n) {
             cg_die("nested function definitions are not supported", n->line);
             break;
         case ST_MODULE:   /* nothing in emitted C */ break;
+        case ST_STRUCT_DECL:
+        case ST_ENUM_DECL:
+            /* not yet supported by native backend; silently skip top-level */
+            break;
         default:          cg_die("unsupported statement", n->line);
     }
 }

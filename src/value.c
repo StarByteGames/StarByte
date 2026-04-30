@@ -10,15 +10,62 @@ Value v_string_take(char *s) { Value v = {0}; v.type = V_STRING; v.as.s = s; ret
 Value v_builtin(BuiltinFn fn) { Value v = {0}; v.type = V_BUILTIN; v.as.builtin = fn; return v; }
 Value v_namespace(const char *name) { Value v = {0}; v.type = V_NAMESPACE; v.as.ns.name = name; return v; }
 
+Value v_struct_def(struct Node *decl) { Value v = {0}; v.type = V_STRUCT_DEF; v.as.sdef.decl = decl; return v; }
+
+Value v_struct_new(const char *type_name, size_t field_count) {
+    Value v = {0};
+    v.type = V_STRUCT;
+    StructInstance *st = (StructInstance*)sb_xcalloc(1, sizeof(StructInstance));
+    st->refcount = 1;
+    st->type_name = sb_strdup(type_name ? type_name : "");
+    st->field_count = field_count;
+    st->fields = field_count
+        ? (StructFieldV*)sb_xcalloc(field_count, sizeof(StructFieldV))
+        : NULL;
+    for (size_t i = 0; i < field_count; i++) {
+        st->fields[i].name = NULL;
+        st->fields[i].value = (Value*)sb_xcalloc(1, sizeof(Value));
+        st->fields[i].value->type = V_NULL;
+    }
+    v.as.st = st;
+    return v;
+}
+
+StructFieldV *struct_find_field(StructInstance *st, const char *name) {
+    if (!st) return NULL;
+    for (size_t i = 0; i < st->field_count; i++) {
+        if (st->fields[i].name && strcmp(st->fields[i].name, name) == 0)
+            return &st->fields[i];
+    }
+    return NULL;
+}
+
+static void struct_release(StructInstance *st) {
+    if (!st) return;
+    if (--st->refcount > 0) return;
+    for (size_t i = 0; i < st->field_count; i++) {
+        free(st->fields[i].name);
+        if (st->fields[i].value) {
+            value_free(st->fields[i].value);
+            free(st->fields[i].value);
+        }
+    }
+    free(st->fields);
+    free(st->type_name);
+    free(st);
+}
+
 Value value_copy(const Value *v) {
     Value r = *v;
     if (v->type == V_STRING && v->as.s) r.as.s = sb_strdup(v->as.s);
+    else if (v->type == V_STRUCT && v->as.st) v->as.st->refcount++;
     return r;
 }
 
 void value_free(Value *v) {
     if (!v) return;
     if (v->type == V_STRING && v->as.s) { free(v->as.s); v->as.s = NULL; }
+    else if (v->type == V_STRUCT && v->as.st) { struct_release(v->as.st); v->as.st = NULL; }
     v->type = V_NULL;
 }
 
@@ -49,6 +96,32 @@ char *value_to_cstring(const Value *v) {
         case V_FUNC: return sb_strdup("<func>");
         case V_BUILTIN: return sb_strdup("<builtin>");
         case V_NAMESPACE: return sb_strdup(v->as.ns.name ? v->as.ns.name : "<namespace>");
+        case V_STRUCT_DEF: return sb_strdup("<struct-def>");
+        case V_STRUCT: {
+            StructInstance *st = v->as.st;
+            size_t cap = 64, len = 0;
+            char *out = (char*)sb_xmalloc(cap);
+            #define APP(s) do { \
+                const char *_s = (s); size_t _l = strlen(_s); \
+                if (len + _l + 1 > cap) { cap = (len + _l + 1) * 2; out = (char*)sb_xrealloc(out, cap); } \
+                memcpy(out + len, _s, _l); len += _l; out[len] = '\0'; \
+            } while (0)
+            APP(st && st->type_name ? st->type_name : "struct");
+            APP("{");
+            if (st) {
+                for (size_t i = 0; i < st->field_count; i++) {
+                    if (i) APP(", ");
+                    APP(st->fields[i].name ? st->fields[i].name : "?");
+                    APP("=");
+                    char *fs = value_to_cstring(st->fields[i].value);
+                    APP(fs);
+                    free(fs);
+                }
+            }
+            APP("}");
+            #undef APP
+            return out;
+        }
     }
     return sb_strdup("");
 }
@@ -64,6 +137,8 @@ const char *value_type_name(ValueType t) {
         case V_FUNC: return "func";
         case V_BUILTIN: return "builtin";
         case V_NAMESPACE: return "namespace";
+        case V_STRUCT: return "struct";
+        case V_STRUCT_DEF: return "struct-def";
     }
     return "?";
 }

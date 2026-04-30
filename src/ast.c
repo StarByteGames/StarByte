@@ -78,6 +78,22 @@ void node_free(Node *n) {
             node_free(n->as.func.body);
             break;
         case ST_MODULE: free(n->as.module_stmt.name); break;
+        case EX_STRUCT_LIT: nodelist_free(&n->as.struct_lit.values); break;
+        case ST_STRUCT_DECL:
+            free(n->as.struct_decl.name);
+            for (size_t i = 0; i < n->as.struct_decl.field_count; i++) {
+                typeref_free(&n->as.struct_decl.fields[i].type);
+                free(n->as.struct_decl.fields[i].name);
+            }
+            free(n->as.struct_decl.fields);
+            break;
+        case ST_ENUM_DECL:
+            free(n->as.enum_decl.name);
+            for (size_t i = 0; i < n->as.enum_decl.count; i++) {
+                free(n->as.enum_decl.members[i].name);
+            }
+            free(n->as.enum_decl.members);
+            break;
         default: break;
     }
     free(n);

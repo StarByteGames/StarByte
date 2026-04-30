@@ -1,7 +1,7 @@
 # StarByte — Language Guide
 
 A complete tour of the StarByte programming language as implemented in
-v0.2.0. This document focuses on how to write StarByte programs.
+v0.3.0. This document focuses on how to write StarByte programs.
 For build and install instructions see [README.md](../README.md).
 
 ---
@@ -18,13 +18,15 @@ For build and install instructions see [README.md](../README.md).
 8. [Functions](#8-functions)
 9. [Modules & Namespaces](#9-modules--namespaces)
 10. [Strings](#10-strings)
-11. [Standard Library](#11-standard-library)
-12. [Program Entry Point](#12-program-entry-point)
-13. [Exit Codes & Error Handling](#13-exit-codes--error-handling)
-14. [Style Guide](#14-style-guide)
-15. [Common Pitfalls](#15-common-pitfalls)
-16. [Full Example](#16-full-example)
-17. [What's Not Yet Supported](#17-whats-not-yet-supported)
+11. [Structs](#11-structs)
+12. [Enums](#12-enums)
+13. [Standard Library](#13-standard-library)
+14. [Program Entry Point](#14-program-entry-point)
+15. [Exit Codes & Error Handling](#15-exit-codes--error-handling)
+16. [Style Guide](#16-style-guide)
+17. [Common Pitfalls](#17-common-pitfalls)
+18. [Full Example](#18-full-example)
+19. [What's Not Yet Supported](#19-whats-not-yet-supported)
 
 ---
 
@@ -354,7 +356,104 @@ string j = Strings.concat("foo", 42);    // "foo42"
 
 ---
 
-## 11. Standard Library
+## 11. Structs
+
+User-defined record types are introduced with `struct`:
+
+```cs
+struct Point {
+    int x;
+    int y;
+};
+```
+
+The trailing `;` after the closing `}` is optional (C-style is
+accepted).
+
+### Creating instances
+
+Brace initializer (positional, in field-declaration order):
+
+```cs
+Point p = {3, 4};
+```
+
+Fewer values than fields is allowed; the missing fields stay `null`.
+More values than fields is a compile-time error.
+
+Default construction (no initializer) gives an instance whose fields
+are all `null`:
+
+```cs
+Point q;
+q.x = 100;
+q.y = 200;
+```
+
+### Reading and writing fields
+
+```cs
+Console.WriteLine(p.x, p.y);    // 3 4
+p.x = p.x + 10;
+p.y *= 2;                       // compound assignment works too
+```
+
+### Printing
+
+Passing a struct to `Console.WriteLine` (or any string context)
+produces a debug-friendly form:
+
+```
+Point{x=13, y=8}
+```
+
+### Semantics
+
+- Structs are heap-allocated and **reference-counted**: assigning
+  a struct value (`Point r = p;`) shares the same instance, so
+  mutating `r.x` also changes `p.x`.
+- Structs themselves can be `const` (the binding cannot be
+  reassigned), but their fields remain mutable.
+- Nested structs and structs-as-fields are supported as long as
+  the field type is a known struct.
+
+---
+
+## 12. Enums
+
+`enum` declares a set of named integer constants:
+
+```cs
+enum Color { RED, GREEN, BLUE };
+enum Status { OK = 0, WARN = 10, ERR = 20 };
+```
+
+- Values auto-increment from `0` (or from the previous explicit value).
+- Explicit values must be integer literals (negative is allowed).
+- A trailing comma after the last member is permitted.
+
+Members are reachable both fully qualified and unqualified:
+
+```cs
+int c = Color.GREEN;     // 1
+int s = WARN;            // 10  -- bare names are also defined
+```
+
+Enums are simply typed-named integers; you can use them anywhere an
+`int` is allowed.
+
+```cs
+if (status == Status.ERR) {
+    Console.WriteLine("failure");
+}
+```
+
+> Native compilation (`-o`) does not yet support `struct`/`enum`.
+> Use the interpreter (the default) for programs that use them.
+
+---
+
+## 13. Standard Library
 
 All built-ins are available without import. Both short and `System.`-prefixed
 forms work.
@@ -395,7 +494,7 @@ Console.WriteLine("Hi", n);
 
 ---
 
-## 12. Program Entry Point
+## 14. Program Entry Point
 
 Two valid styles:
 
@@ -418,7 +517,7 @@ If `main` is `void`, the exit code is `0`.
 
 ---
 
-## 13. Exit Codes & Error Handling
+## 15. Exit Codes & Error Handling
 
 Today StarByte uses return codes for application logic:
 
@@ -447,7 +546,7 @@ and a non-zero exit code.
 
 ---
 
-## 14. Style Guide
+## 16. Style Guide
 
 - Indentation: 4 spaces, no tabs.
 - Braces: opening brace on the same line.
@@ -471,7 +570,7 @@ int doWork(int n) {
 
 ---
 
-## 15. Common Pitfalls
+## 17. Common Pitfalls
 
 | Mistake                                  | Fix                                              |
 |------------------------------------------|--------------------------------------------------|
@@ -480,11 +579,11 @@ int doWork(int n) {
 | Assigning to a `const`                   | Remove `const`, or pick a different variable.    |
 | `if x > 0 { ... }` (no parens)           | Parentheses around conditions are required.     |
 | Mixing `int` and `string` w/o `+`        | Convert via concatenation: `"n=" + n`.           |
-| Using struct fields                      | Not implemented yet (roadmap).                   |
+| Using struct fields with `-o`            | Native backend doesn't support them yet — use the interpreter. |
 
 ---
 
-## 16. Full Example
+## 18. Full Example
 
 ```cs
 module System.Console;
@@ -532,11 +631,11 @@ starbyte example.sb
 
 ---
 
-## 17. What's Not Yet Supported
+## 19. What's Not Yet Supported
 
-These are planned but not in v0.2.0:
+These are planned but not in v0.3.0:
 
-- `struct` / `enum` at runtime
+- `struct` / `enum` in the native backend (`-o`)
 - Classes, inheritance, interfaces
 - Arrays and collections
 - Manual `alloc` / `free` and a garbage collector

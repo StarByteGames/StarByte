@@ -1,0 +1,31 @@
+module System.Console;
+
+struct Point {
+    int x;
+    int y;
+};
+
+enum Color { RED, GREEN, BLUE };
+enum Status { OK = 0, WARN = 10, ERR = 20 };
+
+int main() {
+    Point p = {3, 4};
+    Console.WriteLine("p =", p);
+    Console.WriteLine("p.x =", p.x, " p.y =", p.y);
+
+    p.x = p.x + 10;
+    p.y *= 2;
+    Console.WriteLine("after update:", p);
+
+    Point q;            // default-constructed (fields = null)
+    q.x = 100;
+    q.y = 200;
+    Console.WriteLine("q =", q);
+
+    Console.WriteLine("Color.RED   =", Color.RED);
+    Console.WriteLine("Color.GREEN =", Color.GREEN);
+    Console.WriteLine("Color.BLUE  =", Color.BLUE);
+    Console.WriteLine("Status.WARN =", Status.WARN, " Status.ERR =", Status.ERR);
+
+    return 0;
+}

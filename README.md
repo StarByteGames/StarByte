@@ -1,4 +1,4 @@
-# StarByte 0.2.0
+# StarByte 0.3.0
 
 A fast, modern, general-purpose programming language — C-level performance, C#-style ergonomics, written in pure C.
 
@@ -10,6 +10,16 @@ A fast, modern, general-purpose programming language — C-level performance, C#
 > **Alpha release** — core language, interpreter, native compiler backend,
 > and standard library work, but expect rough edges. Bug reports and
 > feedback are welcome.
+
+## What's new in 0.3.0
+
+- `struct` types with brace initializers, field reads, and field
+  assignment (including compound assignment) — see
+  [examples/structs.sb](examples/structs.sb).
+- `enum` types with auto-incrementing or explicit integer values,
+  accessible as `Color.RED` or unqualified `RED`.
+- Interpreter-only for now; the native backend (`-o`) emits a clear
+  error when struct/enum constructs appear.
 
 ## What's new in 0.2.0
 
@@ -222,7 +232,8 @@ Everything lives in the project directory:
 - [x] Lexer, parser, tree-walking interpreter
 - [x] Functions, recursion, modules, standard library
 - [x] Native compiler backend (`-o`, via C transpilation)
-- [ ] `struct` / `enum` runtime support
+- [x] `struct` / `enum` runtime support (interpreter)
+- [ ] `struct` / `enum` in native backend
 - [ ] Classes, inheritance, interfaces
 - [ ] Manual memory and garbage collector
 - [ ] Exceptions (`try` / `catch` / `throw`)

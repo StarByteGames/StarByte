@@ -84,7 +84,7 @@ make install DESTDIR=/tmp/pkg PREFIX=/usr
 
 ```bash
 starbyte --version
-# starbyte 0.2.0
+# starbyte 0.3.0
 
 which starbyte
 # /usr/local/bin/starbyte

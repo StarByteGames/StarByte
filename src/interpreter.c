@@ -244,36 +244,70 @@ static bool value_eq(const Value *a, const Value *b) {
 
 /* ===== Member resolution (Console.WriteLine etc.) ===== */
 
+/* Try to evaluate a member chain as an instance lookup (struct fields).
+   Returns true on success and writes result to *out (caller owns).
+   On false, no allocation has been made. */
+static bool try_resolve_struct_member(Interp *I, Env *env, Node *member_expr, Value *out) {
+    /* Evaluate the object subexpression */
+    Node *obj = member_expr->as.member.object;
+    Value v;
+    if (obj->kind == EX_MEMBER) {
+        if (!try_resolve_struct_member(I, env, obj, &v)) {
+            /* Try as namespace path first via existing flow */
+            return false;
+        }
+    } else if (obj->kind == EX_IDENT) {
+        bool found = false;
+        v = env_get(env, obj->as.ident.name, &found);
+        if (!found) return false;
+    } else {
+        /* generic eval */
+        v = eval(I, env, obj);
+    }
+    if (v.type != V_STRUCT) { value_free(&v); return false; }
+    StructFieldV *f = struct_find_field(v.as.st, member_expr->as.member.name);
+    if (!f) {
+        char msg[256];
+        snprintf(msg, sizeof msg, "struct '%s' has no field '%s'",
+                 v.as.st->type_name ? v.as.st->type_name : "?",
+                 member_expr->as.member.name);
+        value_free(&v);
+        rt_error(I, member_expr->line, msg);
+    }
+    *out = value_copy(f->value);
+    value_free(&v);
+    return true;
+}
+
 static Value resolve_member(Interp *I, Env *env, Node *member_expr) {
-    /* Build dotted path, look up "A.B.C" from env. */
-    /* First resolve object: if it's an EX_IDENT or nested EX_MEMBER, build full path. */
-    /* We allow variable.member only when the object is a namespace (no struct fields yet). */
+    /* First: build dotted path "A.B.C" if the chain bottoms in an identifier
+       and try a namespace lookup. */
     char path[512]; path[0] = '\0';
     Node *cur = member_expr;
-    /* unwind */
     Node *stack[64]; int sp = 0;
     while (cur && cur->kind == EX_MEMBER) {
         if (sp >= 64) rt_error(I, member_expr->line, "member path too deep");
         stack[sp++] = cur;
         cur = cur->as.member.object;
     }
-    if (!cur || cur->kind != EX_IDENT) {
-        /* fallback: evaluate object then error (no struct fields supported) */
-        rt_error(I, member_expr->line, "member access only supported on identifiers/namespaces");
+    if (cur && cur->kind == EX_IDENT) {
+        snprintf(path, sizeof path, "%s", cur->as.ident.name);
+        for (int i = sp - 1; i >= 0; i--) {
+            size_t len = strlen(path);
+            snprintf(path + len, sizeof(path) - len, ".%s", stack[i]->as.member.name);
+        }
+        bool found = false;
+        Value v = env_get(env, path, &found);
+        if (found) return v;
     }
-    snprintf(path, sizeof path, "%s", cur->as.ident.name);
-    for (int i = sp - 1; i >= 0; i--) {
-        size_t len = strlen(path);
-        snprintf(path + len, sizeof(path) - len, ".%s", stack[i]->as.member.name);
-    }
-    bool found = false;
-    Value v = env_get(env, path, &found);
-    if (!found) {
-        char msg[256];
-        snprintf(msg, sizeof msg, "unknown name '%s'", path);
-        rt_error(I, member_expr->line, msg);
-    }
-    return v;
+    /* Fallback: struct-instance field access */
+    Value out;
+    if (try_resolve_struct_member(I, env, member_expr, &out)) return out;
+    char msg[256];
+    if (path[0]) snprintf(msg, sizeof msg, "unknown name '%s'", path);
+    else snprintf(msg, sizeof msg, "unsupported member access");
+    rt_error(I, member_expr->line, msg);
+    return v_null();
 }
 
 /* ===== Eval / Exec ===== */
@@ -364,6 +398,46 @@ static Value eval(Interp *I, Env *env, Node *n) {
         }
         case EX_ASSIGN: {
             Node *t = n->as.assign.target;
+            if (t->kind == EX_MEMBER) {
+                /* Struct field assignment: obj.field = value (single level: obj must be ident
+                   or chain of struct fields). */
+                Value rhs = eval(I, env, n->as.assign.value);
+                /* Evaluate the object subexpression to get a struct (refcounted). */
+                Value obj;
+                Node *objn = t->as.member.object;
+                if (objn->kind == EX_IDENT) {
+                    bool found = false;
+                    obj = env_get(env, objn->as.ident.name, &found);
+                    if (!found) { value_free(&rhs); rt_error(I, n->line, "undefined variable in assignment"); }
+                } else {
+                    obj = eval(I, env, objn);
+                }
+                if (obj.type != V_STRUCT) {
+                    value_free(&obj); value_free(&rhs);
+                    rt_error(I, n->line, "field assignment requires struct value");
+                }
+                StructFieldV *f = struct_find_field(obj.as.st, t->as.member.name);
+                if (!f) {
+                    char msg[256];
+                    snprintf(msg, sizeof msg, "struct '%s' has no field '%s'",
+                             obj.as.st->type_name ? obj.as.st->type_name : "?",
+                             t->as.member.name);
+                    value_free(&obj); value_free(&rhs);
+                    rt_error(I, n->line, msg);
+                }
+                Value to_store;
+                if (n->as.assign.is_compound) {
+                    Value cur = value_copy(f->value);
+                    to_store = bin_arith(I, n->as.assign.compound, cur, rhs, n->line);
+                } else {
+                    to_store = rhs;
+                }
+                Value ret = value_copy(&to_store);
+                value_free(f->value);
+                *f->value = to_store;
+                value_free(&obj);
+                return ret;
+            }
             if (t->kind != EX_IDENT) rt_error(I, n->line, "assignment target must be a variable");
             Value rhs = eval(I, env, n->as.assign.value);
             Value to_store;
@@ -463,7 +537,57 @@ static void exec(Interp *I, Env *env, Node *n) {
         }
         case ST_VAR_DECL: {
             Value v = v_null();
-            if (n->as.var_decl.init) v = eval(I, env, n->as.var_decl.init);
+            Node *init = n->as.var_decl.init;
+            if (init && init->kind == EX_STRUCT_LIT) {
+                /* Construct a struct instance from the brace initializer.
+                   The variable's declared type must name a known struct. */
+                const char *tname = n->as.var_decl.type.type_name;
+                bool found = false;
+                Value def = env_get(env, tname ? tname : "", &found);
+                if (!found || def.type != V_STRUCT_DEF) {
+                    value_free(&def);
+                    char msg[256];
+                    snprintf(msg, sizeof msg,
+                             "brace initializer requires a struct type ('%s' is not a struct)",
+                             tname ? tname : "?");
+                    rt_error(I, n->line, msg);
+                }
+                Node *sd = def.as.sdef.decl;
+                size_t fc = sd->as.struct_decl.field_count;
+                size_t given = init->as.struct_lit.values.count;
+                if (given > fc) {
+                    value_free(&def);
+                    rt_error(I, n->line, "too many initializers for struct");
+                }
+                v = v_struct_new(sd->as.struct_decl.name, fc);
+                for (size_t i = 0; i < fc; i++) {
+                    v.as.st->fields[i].name = sb_strdup(sd->as.struct_decl.fields[i].name);
+                    if (i < given) {
+                        Value fv = eval(I, env, init->as.struct_lit.values.items[i]);
+                        value_free(v.as.st->fields[i].value);
+                        *v.as.st->fields[i].value = fv;
+                    }
+                }
+                value_free(&def);
+            } else if (init) {
+                v = eval(I, env, init);
+            } else {
+                /* Default-construct if the declared type is a struct. */
+                const char *tname = n->as.var_decl.type.type_name;
+                if (tname) {
+                    bool found = false;
+                    Value def = env_get(env, tname, &found);
+                    if (found && def.type == V_STRUCT_DEF) {
+                        Node *sd = def.as.sdef.decl;
+                        size_t fc = sd->as.struct_decl.field_count;
+                        v = v_struct_new(sd->as.struct_decl.name, fc);
+                        for (size_t i = 0; i < fc; i++) {
+                            v.as.st->fields[i].name = sb_strdup(sd->as.struct_decl.fields[i].name);
+                        }
+                    }
+                    value_free(&def);
+                }
+            }
             env_define(env, n->as.var_decl.name, v, n->as.var_decl.type.is_const);
             break;
         }
@@ -526,6 +650,25 @@ static void exec(Interp *I, Env *env, Node *n) {
             break;
         }
         case ST_MODULE: /* nothing at runtime for now */ break;
+        case ST_STRUCT_DECL: {
+            env_define(env, n->as.struct_decl.name, v_struct_def(n), true);
+            break;
+        }
+        case ST_ENUM_DECL: {
+            env_define(env, n->as.enum_decl.name, v_namespace(n->as.enum_decl.name), true);
+            long long next = 0;
+            char path[256];
+            for (size_t i = 0; i < n->as.enum_decl.count; i++) {
+                EnumMember *m = &n->as.enum_decl.members[i];
+                long long val = m->has_value ? m->value : next;
+                next = val + 1;
+                snprintf(path, sizeof path, "%s.%s", n->as.enum_decl.name, m->name);
+                env_define(env, path, v_int(val), true);
+                /* also expose unqualified name for C-style access */
+                env_define(env, m->name, v_int(val), true);
+            }
+            break;
+        }
         default: {
             /* expression at top level (shouldn't happen via parser) */
             Value v = eval(I, env, n);
@@ -585,7 +728,7 @@ void interp_dispose(Interp *I) {
 }
 
 int interp_run(Interp *I, Node *program) {
-    /* First pass: hoist function and module declarations into globals */
+    /* First pass: hoist function, struct and enum declarations into globals */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
         if (s->kind == ST_FUNC_DECL) {
@@ -594,12 +737,14 @@ int interp_run(Interp *I, Node *program) {
             v.as.func.decl = s;
             v.as.func.closure = I->globals;
             env_define(I->globals, s->as.func.name, v, true);
+        } else if (s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL) {
+            exec(I, I->globals, s);
         }
     }
-    /* Execute top-level statements (skip already-hoisted func decls; still safe to re-define). */
+    /* Execute top-level statements (skip already-hoisted decls). */
     for (size_t i = 0; i < program->as.block.stmts.count; i++) {
         Node *s = program->as.block.stmts.items[i];
-        if (s->kind == ST_FUNC_DECL) continue;
+        if (s->kind == ST_FUNC_DECL || s->kind == ST_STRUCT_DECL || s->kind == ST_ENUM_DECL) continue;
         exec(I, I->globals, s);
         if (I->return_flag) break;
     }

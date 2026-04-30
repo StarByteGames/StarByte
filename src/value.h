@@ -12,7 +12,9 @@ typedef enum {
     V_STRING,
     V_FUNC,
     V_BUILTIN,
-    V_NAMESPACE
+    V_NAMESPACE,
+    V_STRUCT,        /* instance */
+    V_STRUCT_DEF     /* type/blueprint */
 } ValueType;
 
 struct Node;
@@ -21,6 +23,18 @@ struct Env;
 
 typedef struct Value Value;
 typedef Value (*BuiltinFn)(struct Interp *I, int argc, Value *argv);
+
+typedef struct StructField_v {
+    char *name;
+    Value *value;        /* heap-allocated so refs can mutate */
+} StructFieldV;
+
+typedef struct StructInstance {
+    int refcount;
+    char *type_name;
+    size_t field_count;
+    StructFieldV *fields;
+} StructInstance;
 
 struct Value {
     ValueType type;
@@ -39,6 +53,10 @@ struct Value {
             const char *name;
             /* members lookup is done by name in interpreter */
         } ns;
+        StructInstance *st;          /* refcounted */
+        struct {
+            struct Node *decl;       /* ST_STRUCT_DECL (not owned) */
+        } sdef;
     } as;
 };
 
@@ -51,6 +69,9 @@ Value v_string(const char *s);          /* copies */
 Value v_string_take(char *s);           /* takes ownership */
 Value v_builtin(BuiltinFn fn);
 Value v_namespace(const char *name);
+Value v_struct_def(struct Node *decl);
+Value v_struct_new(const char *type_name, size_t field_count);
+StructFieldV *struct_find_field(StructInstance *st, const char *name);
 
 Value value_copy(const Value *v);
 void  value_free(Value *v);

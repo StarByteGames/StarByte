@@ -14,6 +14,7 @@ typedef enum {
     EX_MEMBER,         /* obj.name (used for Console.WriteLine etc.) */
     EX_POSTFIX,        /* x++ x-- */
     EX_LOGICAL,        /* && || (short-circuit) */
+    EX_STRUCT_LIT,     /* { e1, e2, ... } brace initializer */
 
     /* Statements */
     ST_EXPR,
@@ -26,7 +27,9 @@ typedef enum {
     ST_BREAK,
     ST_CONTINUE,
     ST_FUNC_DECL,
-    ST_MODULE          /* module a.b.c; (parsed, ignored at runtime) */
+    ST_MODULE,         /* module a.b.c; (parsed, ignored at runtime) */
+    ST_STRUCT_DECL,    /* struct Name { type field; ... }; */
+    ST_ENUM_DECL       /* enum Name { A, B = 3, C }; */
 } NodeKind;
 
 typedef enum {
@@ -55,6 +58,17 @@ typedef struct {
     TypeRef type;
     char *name;
 } Param;
+
+typedef struct {
+    TypeRef type;
+    char *name;
+} StructField;
+
+typedef struct {
+    char     *name;
+    long long value;
+    bool      has_value;
+} EnumMember;
 
 struct Node {
     NodeKind kind;
@@ -100,6 +114,20 @@ struct Node {
         } func;
 
         struct { char *name; } module_stmt;
+
+        struct { NodeList values; } struct_lit;
+
+        struct {
+            char         *name;
+            StructField  *fields;
+            size_t        field_count;
+        } struct_decl;
+
+        struct {
+            char        *name;
+            EnumMember  *members;
+            size_t       count;
+        } enum_decl;
     } as;
 };
 
